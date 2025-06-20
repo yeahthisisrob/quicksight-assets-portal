@@ -60,14 +60,39 @@ export default function DatasourceTypeBadge({ datasourceType, importMode, compac
   }
 
   const formatDatasourceType = (type: string) => {
-    // Clean up the datasource type for display
-    if (type === 'S3') return 'S3';
-    if (type === 'Custom SQL') return 'SQL';
-    if (type === 'Uploaded File') return 'File';
-    if (type.length > 10 && compact) {
-      return type.substring(0, 8) + '...';
+    // Map QuickSight datasource types to friendly names
+    const typeMap: Record<string, string> = {
+      'AMAZONELASTICSEARCH': 'Elasticsearch',
+      'ATHENA': 'Athena',
+      'AURORA': 'Aurora',
+      'AURORA_POSTGRESQL': 'Aurora PG',
+      'MARIADB': 'MariaDB',
+      'MYSQL': 'MySQL',
+      'POSTGRESQL': 'PostgreSQL',
+      'PRESTO': 'Presto',
+      'REDSHIFT': 'Redshift',
+      'S3': 'S3',
+      'SNOWFLAKE': 'Snowflake',
+      'SPARK': 'Spark',
+      'SQLSERVER': 'SQL Server',
+      'TERADATA': 'Teradata',
+      'TIMESTREAM': 'Timestream',
+      'TWITTER': 'Twitter',
+      'BIGQUERY': 'BigQuery',
+      'DATABRICKS': 'Databricks',
+      'Custom SQL': 'SQL',
+      'Uploaded File': 'File',
+      'Database': 'Database',
+      'Unknown': 'Unknown'
+    };
+    
+    const mapped = typeMap[type] || type;
+    
+    // Apply compact formatting if needed
+    if (mapped.length > 10 && compact) {
+      return mapped.substring(0, 8) + '...';
     }
-    return type;
+    return mapped;
   };
 
   const chipContent = (

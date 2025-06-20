@@ -106,4 +106,99 @@ router.delete('/:folderId/tags', asyncHandler(async (req, res) => {
   });
 }));
 
+// POST /api/folders/:folderId/members
+router.post('/:folderId/members', asyncHandler(async (req, res) => {
+  const { folderId } = req.params;
+  const { MemberType, MemberId } = req.body;
+  
+  logger.info(`Adding member to folder ${folderId}`, { MemberType, MemberId });
+  
+  // Validate input
+  if (!MemberType || !MemberId) {
+    return res.status(400).json({
+      success: false,
+      error: 'MemberType and MemberId are required',
+    });
+  }
+  
+  // Validate member type
+  const validTypes = ['DASHBOARD', 'ANALYSIS', 'DATASET'];
+  if (!validTypes.includes(MemberType.toUpperCase())) {
+    return res.status(400).json({
+      success: false,
+      error: 'Invalid MemberType. Must be DASHBOARD, ANALYSIS, or DATASET',
+    });
+  }
+  
+  try {
+    // Add the asset to the QuickSight folder
+    await foldersService.addMemberToFolder(folderId, MemberType, MemberId);
+    
+    res.json({
+      success: true,
+      message: `Added ${MemberType} ${MemberId} to folder ${folderId}`,
+    });
+  } catch (error: any) {
+    logger.error('Error adding member to folder:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to add member to folder',
+    });
+  }
+}));
+
+// GET /api/folders/:folderId/members
+router.get('/:folderId/members', asyncHandler(async (req, res) => {
+  const { folderId } = req.params;
+  
+  logger.info(`Getting members for folder ${folderId}`);
+  
+  try {
+    // Get folder members from QuickSight
+    const members = await foldersService.getFolderMembers(folderId);
+    
+    res.json({
+      success: true,
+      data: members,
+    });
+  } catch (error: any) {
+    logger.error('Error getting folder members:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to get folder members',
+    });
+  }
+}));
+
+// DELETE /api/folders/:folderId/members/:memberId
+router.delete('/:folderId/members/:memberId', asyncHandler(async (req, res) => {
+  const { folderId, memberId } = req.params;
+  const { memberType } = req.query;
+  
+  logger.info(`Removing member ${memberId} from folder ${folderId}`, { memberType });
+  
+  if (!memberType) {
+    return res.status(400).json({
+      success: false,
+      error: 'memberType query parameter is required',
+    });
+  }
+  
+  try {
+    // Remove the asset from the QuickSight folder
+    await foldersService.removeMemberFromFolder(folderId, memberId, memberType.toString());
+    
+    res.json({
+      success: true,
+      message: `Removed ${memberType} ${memberId} from folder ${folderId}`,
+    });
+  } catch (error: any) {
+    logger.error('Error removing member from folder:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to remove member from folder',
+    });
+  }
+}));
+
 export { router as foldersRoutes };

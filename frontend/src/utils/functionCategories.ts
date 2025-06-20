@@ -194,7 +194,7 @@ export const getStandardFunctionName = (funcKey: string): string | undefined => 
 export const getFunctionCategoryKey = (standardFuncName: string): string | undefined => {
   const lowerCaseFuncName = standardFuncName.toLowerCase();
   const entry = Object.entries(functionCategories).find(
-    ([key, value]) => value.standardFunction.toLowerCase() === lowerCaseFuncName
+    ([_key, value]) => value.standardFunction.toLowerCase() === lowerCaseFuncName
   );
   return entry ? entry[0] : undefined;
 };

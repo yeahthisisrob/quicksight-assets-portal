@@ -32,10 +32,11 @@ interface FieldDetailsDialogProps {
   onClose: () => void;
   field: any;
   allCalculatedFields?: any[];
+  onFieldUpdate?: (fieldName: string, metadata: any) => void;
 }
 
 
-export default function FieldDetailsDialog({ open, onClose, field, allCalculatedFields = [] }: FieldDetailsDialogProps) {
+export default function FieldDetailsDialog({ open, onClose, field, allCalculatedFields = [], onFieldUpdate }: FieldDetailsDialogProps) {
   const [tabValue, setTabValue] = useState(0);
   const [showExpressionGraph, setShowExpressionGraph] = useState(false);
   const [selectedExpression, setSelectedExpression] = useState<string>('');
@@ -132,6 +133,11 @@ export default function FieldDetailsDialog({ open, onClose, field, allCalculated
                 name: field.fieldName,
                 type: field.dataType,
                 expression: field.expression,
+              }}
+              onUpdate={(metadata) => {
+                if (onFieldUpdate) {
+                  onFieldUpdate(field.fieldName, metadata);
+                }
               }}
             />
           )

@@ -1,7 +1,6 @@
 {
   "name": "quicksight-assets-portal",
   "version": "1.0.0",
-  "description": "A comprehensive web portal for managing and exploring AWS QuickSight assets",
   "private": true,
   "scripts": {
     "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
@@ -10,38 +9,19 @@
     "build": "npm run build:backend && npm run build:frontend",
     "build:backend": "cd backend && npm run build",
     "build:frontend": "cd frontend && npm run build",
-    "install:all": "npm install && cd backend && npm install && cd ../frontend && npm install",
-    "start": "cd backend && npm start",
     "lint": "npm run lint:backend && npm run lint:frontend",
-    "lint:backend": "cd backend && npm run lint",
-    "lint:frontend": "cd frontend && npm run lint"
+    "lint:fix": "cd backend && npm run lint:fix && cd ../frontend && npm run lint:fix",
+    "test": "cd backend && npm test",
+    "install:all": "npm ci && cd backend && npm ci && cd ../frontend && npm ci && cd ../infrastructure/cdk && npm ci",
+    "deploy": "npm run build && cd infrastructure/cdk && npm run deploy",
+    "deploy:prod": "npm run build && cd infrastructure/cdk && npx cdk deploy --all --require-approval never",
+    "deploy:fresh": "npm run install:all && npm run deploy:prod",
+    "cdk:synth": "npm run build && cd infrastructure/cdk && npx cdk synth",
+    "cdk:diff": "npm run build && cd infrastructure/cdk && npx cdk diff",
+    "cdk:bootstrap": "cd infrastructure/cdk && npx cdk bootstrap",
+    "cdk:destroy": "cd infrastructure/cdk && npx cdk destroy --all"
   },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/yeahthisisrob/quicksight-assets-portal.git"
-  },
-  "keywords": [
-    "quicksight",
-    "aws",
-    "dashboard",
-    "analytics",
-    "metadata",
-    "react",
-    "typescript",
-    "express",
-    "nodejs"
-  ],
-  "author": "",
-  "license": "MIT",
-  "bugs": {
-    "url": "https://github.com/yeahthisisrob/quicksight-assets-portal/issues"
-  },
-  "homepage": "https://github.com/yeahthisisrob/quicksight-assets-portal#readme",
   "devDependencies": {
     "concurrently": "^8.2.2"
-  },
-  "engines": {
-    "node": ">=16.0.0",
-    "npm": ">=7.0.0"
   }
 }

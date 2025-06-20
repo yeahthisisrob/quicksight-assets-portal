@@ -9,7 +9,9 @@ export interface CalculatedField {
 export interface Field {
   fieldId: string;
   fieldName: string;
+  name?: string; // Frontend compatibility
   dataType?: string;
+  type?: string; // Frontend compatibility
   dataSetIdentifier?: string;
 }
 
@@ -213,7 +215,9 @@ export class AssetParserService {
               result.fields.push({
                 fieldId: col.Name,
                 fieldName: col.Name,
+                name: col.Name,
                 dataType: col.Type,
+                type: col.Type,
               });
             });
           } else if (table.CustomSql?.Columns) {
@@ -221,7 +225,9 @@ export class AssetParserService {
               result.fields.push({
                 fieldId: col.Name,
                 fieldName: col.Name,
+                name: col.Name,
                 dataType: col.Type,
+                type: col.Type,
               });
             });
           } else if (table.S3Source?.UploadSettings) {
@@ -263,7 +269,9 @@ export class AssetParserService {
             result.fields.push({
               fieldId: col.Name,
               fieldName: col.Name,
+              name: col.Name,
               dataType: col.Type,
+              type: col.Type,
             });
           }
         });
@@ -281,7 +289,7 @@ export class AssetParserService {
       // Check if this is a flat file dataset (uploaded file)
       if (dataset.ImportMode === 'DIRECT_QUERY' && dataset.PhysicalTableMap) {
         const hasUploadedFile = Object.values(dataset.PhysicalTableMap).some((table: any) => 
-          table.S3Source?.UploadSettings || table.UploadSettings
+          table.S3Source?.UploadSettings || table.UploadSettings,
         );
         if (hasUploadedFile && !result.datasourceInfo) {
           result.datasourceInfo = {

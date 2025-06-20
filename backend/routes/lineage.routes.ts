@@ -1,12 +1,12 @@
 import { Router } from 'express';
 import { LineageService } from '../services/lineage.service';
-import { AssetExportService } from '../services/assetExport.service';
+import { AssetExportOrchestrator } from '../services/export/AssetExportOrchestrator';
 import { asyncHandler } from '../utils/asyncHandler';
 import { logger } from '../utils/logger';
 
 const router = Router();
 const lineageService = new LineageService();
-const assetExportService = new AssetExportService();
+const assetExportService = new AssetExportOrchestrator();
 
 // GET /api/lineage/all
 router.get('/all', asyncHandler(async (req, res) => {
@@ -50,7 +50,7 @@ router.get('/debug', asyncHandler(async (req, res) => {
     const debugInfo: any = {
       assetsCount: allAssets.assets.length,
       assetTypes: {},
-      sampleStructures: {}
+      sampleStructures: {},
     };
     
     // Count asset types
@@ -78,8 +78,8 @@ router.get('/debug', asyncHandler(async (req, res) => {
               dashboardKeys: assetData.Dashboard ? Object.keys(assetData.Dashboard) : [],
               datasetKeys: assetData.DataSet ? Object.keys(assetData.DataSet) : [],
               analysisKeys: assetData.Analysis ? Object.keys(assetData.Analysis) : [],
-              datasourceKeys: assetData.DataSource ? Object.keys(assetData.DataSource) : []
-            }
+              datasourceKeys: assetData.DataSource ? Object.keys(assetData.DataSource) : [],
+            },
           };
         }
       }
@@ -94,7 +94,7 @@ router.get('/debug', asyncHandler(async (req, res) => {
     res.status(500).json({
       success: false,
       error: 'Debug failed',
-      details: error instanceof Error ? error.message : 'Unknown error'
+      details: error instanceof Error ? error.message : 'Unknown error',
     });
   }
 }));

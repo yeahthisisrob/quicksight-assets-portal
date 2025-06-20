@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useDebounce } from '@/hooks/useDebounce';
 import {
   Box,
   Paper,
@@ -19,7 +20,12 @@ import {
   CircularProgress,
   Stack,
   Tooltip,
-  LinearProgress,
+  TextField,
+  InputAdornment,
+  FormControl,
+  InputLabel,
+  Select,
+  MenuItem,
 } from '@mui/material';
 import {
   DataGrid,
@@ -39,11 +45,14 @@ import {
   Visibility as ViewIcon,
   Code as CodeIcon,
   Source as DatasourceIcon,
+  Search as SearchIcon,
+  Build as BuildIcon,
 } from '@mui/icons-material';
 import { format, formatDistanceToNow } from 'date-fns';
-import { assetsApi } from '@/services/api';
+import { assetsApi, dataCatalogApi } from '@/services/api';
 import { useSnackbar } from 'notistack';
 import Editor from '@monaco-editor/react';
+import ExportSessionManager from '@/components/export/ExportSessionManager';
 
 interface TabPanelProps {
   children?: React.ReactNode;
@@ -77,6 +86,14 @@ export default function AssetMetadataPage() {
   const [exportSessionId, setExportSessionId] = useState<string | null>(null);
   const [exportProgress, setExportProgress] = useState<any>(null);
   const [isExporting, setIsExporting] = useState(false);
+  const [exportingAssetType, setExportingAssetType] = useState<string | null>(null);
+  const [assetsPage, setAssetsPage] = useState(0);
+  const [assetsPageSize, setAssetsPageSize] = useState(50);
+  const [assetsSearch, setAssetsSearch] = useState('');
+  const [assetsTypeFilter, setAssetsTypeFilter] = useState('');
+  const [forceExportDialogOpen, setForceExportDialogOpen] = useState(false);
+  const [hasActiveSession, setHasActiveSession] = useState(false);
+  const [isRebuildingIndex, setIsRebuildingIndex] = useState(false);
 
   // Fetch export summary
   const { data: exportSummary, isLoading: summaryLoading } = useQuery({
@@ -84,29 +101,84 @@ export default function AssetMetadataPage() {
     queryFn: () => assetsApi.getExportSummary(),
   });
 
-  // Fetch all assets
-  const { data: assetsData, isLoading: assetsLoading } = useQuery({
-    queryKey: ['assets-all'],
-    queryFn: () => assetsApi.getAll(),
-    enabled: tabValue === 1, // Only fetch when asset table tab is active
+  // Debounce search term for assets
+  const debouncedAssetsSearch = useDebounce(assetsSearch, 500);
+
+  // Fetch asset index/counts (always load for overview)
+  const { data: assetIndex } = useQuery({
+    queryKey: ['asset-index'],
+    queryFn: () => assetsApi.getAll({
+      page: 1,
+      pageSize: 1, // Just need the summary/counts
+    }),
+    staleTime: 5 * 60 * 1000,
   });
 
-  // Export mutation
-  const exportMutation = useMutation({
-    mutationFn: (forceRefresh: boolean) => assetsApi.exportAll(forceRefresh),
-    onSuccess: (_) => {
-      enqueueSnackbar('Asset export completed successfully', { variant: 'success' });
-      queryClient.invalidateQueries({ queryKey: ['export-summary'] });
-      queryClient.invalidateQueries({ queryKey: ['assets-all'] });
-    },
-    onError: (error: Error) => {
-      enqueueSnackbar(`Export failed: ${error.message}`, { variant: 'error' });
-    },
+  // Fetch assets with pagination (only for table view)
+  const { data: assetsData, isLoading: assetsLoading } = useQuery({
+    queryKey: ['assets-all', assetsPage + 1, assetsPageSize, debouncedAssetsSearch, assetsTypeFilter],
+    queryFn: () => assetsApi.getAll({
+      page: assetsPage + 1, // API uses 1-based pages
+      pageSize: assetsPageSize,
+      search: debouncedAssetsSearch,
+      assetType: assetsTypeFilter || undefined,
+    }),
+    enabled: tabValue === 1, // Only fetch when asset table tab is active
+    placeholderData: (previousData) => previousData,
+  });
+
+  // Fetch data catalog summary
+  const { data: catalogData } = useQuery({
+    queryKey: ['data-catalog'],
+    queryFn: () => dataCatalogApi.getCatalog(),
+    staleTime: 5 * 60 * 1000,
   });
 
   const handleExport = (forceRefresh = false) => {
     // Use progressive export instead
     handleProgressiveExport(forceRefresh);
+  };
+
+  const handleExportAssetType = async (assetType: string, forceRefresh = false) => {
+    try {
+      setExportingAssetType(assetType);
+      enqueueSnackbar(`Starting ${assetType} export...`, { variant: 'info' });
+      
+      const response = await assetsApi.exportAssetType(assetType, forceRefresh);
+      
+      // The export now starts asynchronously, we get back session info
+      if (response.sessionId) {
+        setExportSessionId(response.sessionId);
+        setIsExporting(true);
+        
+        // Initialize export progress
+        if (!exportProgress) {
+          setExportProgress({
+            progress: {
+              dashboards: { status: 'idle', current: 0, total: 0 },
+              datasets: { status: 'idle', current: 0, total: 0 },
+              analyses: { status: 'idle', current: 0, total: 0 },
+              datasources: { status: 'idle', current: 0, total: 0 },
+            },
+            startTime: new Date().toISOString(),
+          });
+        }
+        
+        // Update the specific asset type progress
+        setExportProgress((prev: any) => ({
+          ...prev,
+          progress: {
+            ...prev.progress,
+            [assetType]: response.progress || { status: 'running', current: 0, total: 0 },
+          },
+        }));
+        
+        enqueueSnackbar(`${assetType} export started. Monitoring progress...`, { variant: 'info' });
+      }
+    } catch (error: any) {
+      enqueueSnackbar(`Failed to start ${assetType} export: ${error.message}`, { variant: 'error' });
+      setExportingAssetType(null);
+    }
   };
 
   // Poll for export progress
@@ -118,41 +190,86 @@ export default function AssetMetadataPage() {
         const response = await assetsApi.getExportSession(exportSessionId);
         setExportProgress(response);
 
-        // Check if all asset types are completed
-        const allCompleted = response.progress && 
-          Object.values(response.progress).every((p: any) => p.status === 'completed' || p.status === 'error');
-        
-        if (allCompleted) {
+        // Check if session was cancelled
+        if (response.status === 'cancelled') {
           setIsExporting(false);
+          setExportingAssetType(null);
+          clearInterval(pollInterval);
+          setExportSessionId(null);
+          setExportProgress(null);
+          queryClient.invalidateQueries({ queryKey: ['active-sessions'] });
+          return;
+        }
+
+        // Check if the specific export type is completed (if exportingAssetType is set)
+        // or if all asset types are completed (for full export)
+        let exportCompleted = false;
+        
+        // Check if this is a rebuild session
+        const isRebuildSession = response.progress?.rebuild !== undefined;
+        
+        if (isRebuildSession) {
+          // Rebuild session
+          const rebuildProgress = response.progress.rebuild;
+          exportCompleted = rebuildProgress && (rebuildProgress.status === 'completed' || rebuildProgress.status === 'error');
+        } else if (exportingAssetType) {
+          // Single asset type export
+          const assetProgress = response.progress?.[exportingAssetType];
+          exportCompleted = assetProgress && (assetProgress.status === 'completed' || assetProgress.status === 'error');
+        } else {
+          // Full export - check all types
+          exportCompleted = response.progress && 
+            Object.values(response.progress).every((p: any) => p.status === 'completed' || p.status === 'error');
+        }
+        
+        if (exportCompleted) {
+          setIsExporting(false);
+          setExportingAssetType(null);
+          setIsRebuildingIndex(false);
           clearInterval(pollInterval);
           
-          // Check if any failed
-          const anyFailed = Object.values(response.progress).some((p: any) => p.status === 'error');
+          // Check if the export failed
+          const failed = isRebuildSession
+            ? response.progress?.rebuild?.status === 'error'
+            : exportingAssetType 
+            ? response.progress?.[exportingAssetType]?.status === 'error'
+            : Object.values(response.progress || {}).some((p: any) => p.status === 'error');
           
-          if (!anyFailed) {
-            // Generate summary from progress data
-            const summary = {
-              dashboards: response.progress.dashboards,
-              datasets: response.progress.datasets,
-              analyses: response.progress.analyses,
-              datasources: response.progress.datasources,
-              exportTime: response.startTime,
-              duration: Date.now() - new Date(response.startTime).getTime(),
-            };
+          if (!failed) {
+            // For rebuild sessions, we don't need to complete the session as the backend already did it
+            if (!isRebuildSession) {
+              // For progressive exports, don't pass a summary - let the backend use its own
+              // since individual asset exports already updated the export summary
+              await assetsApi.completeExportSession(null);
+            }
             
-            // Complete the session with the summary
-            await assetsApi.completeExportSession(summary);
-            
-            enqueueSnackbar('Asset export completed successfully', { variant: 'success' });
+            const successMessage = isRebuildSession 
+              ? 'Index and catalog rebuild completed successfully' 
+              : 'Asset export completed successfully';
+            enqueueSnackbar(successMessage, { variant: 'success' });
             queryClient.invalidateQueries({ queryKey: ['export-summary'] });
             queryClient.invalidateQueries({ queryKey: ['assets-all'] });
             queryClient.invalidateQueries({ queryKey: ['data-catalog'] });
+            queryClient.invalidateQueries({ queryKey: ['active-sessions'] });
           } else {
-            enqueueSnackbar('Export completed with errors', { variant: 'warning' });
+            const errorMessage = isRebuildSession 
+              ? 'Index rebuild completed with errors' 
+              : 'Export completed with errors';
+            enqueueSnackbar(errorMessage, { variant: 'warning' });
             queryClient.invalidateQueries({ queryKey: ['export-summary'] });
             queryClient.invalidateQueries({ queryKey: ['assets-all'] });
             queryClient.invalidateQueries({ queryKey: ['data-catalog'] });
+            queryClient.invalidateQueries({ queryKey: ['active-sessions'] });
           }
+          
+          // Clear session state to re-enable buttons
+          setExportSessionId(null);
+          setExportProgress(null);
+          setIsRebuildingIndex(false);
+          setExportingAssetType(null);
+          
+          // Force immediate refetch of active sessions
+          queryClient.refetchQueries({ queryKey: ['active-sessions'] });
         }
       } catch (error) {
         console.error('Error polling export progress:', error);
@@ -160,29 +277,39 @@ export default function AssetMetadataPage() {
     }, 1000); // Poll every second
 
     return () => clearInterval(pollInterval);
-  }, [exportSessionId, isExporting, queryClient, enqueueSnackbar]);
+  }, [exportSessionId, isExporting, exportingAssetType, queryClient, enqueueSnackbar]);
 
   // New export handler with progress tracking
   const handleProgressiveExport = async (forceRefresh = false) => {
     try {
       setIsExporting(true);
+      enqueueSnackbar(`Starting ${forceRefresh ? 'force' : 'incremental'} export for all asset types...`, { variant: 'info' });
       
-      // Start export session
-      const { sessionId } = await assetsApi.startExportSession();
-      setExportSessionId(sessionId);
-
-      // Export each asset type sequentially
-      const assetTypes = ['dashboards', 'datasets', 'analyses', 'datasources'];
+      // Use the exportAll endpoint which already handles sequential exports
+      const response = await assetsApi.exportAll(forceRefresh);
       
-      for (const assetType of assetTypes) {
-        await assetsApi.exportAssetType(assetType, forceRefresh);
+      if (response.sessionId) {
+        setExportSessionId(response.sessionId);
+        
+        // Initialize progress tracking
+        setExportProgress({
+          progress: {
+            dashboards: { status: 'idle', current: 0, total: 0 },
+            datasets: { status: 'idle', current: 0, total: 0 },
+            analyses: { status: 'idle', current: 0, total: 0 },
+            datasources: { status: 'idle', current: 0, total: 0 },
+          },
+          startTime: new Date().toISOString(),
+        });
+        
+        enqueueSnackbar('Export started. Monitoring progress...', { variant: 'info' });
       }
-
-      // Let the polling handle completion
       
     } catch (error: any) {
       enqueueSnackbar(`Export failed: ${error.message}`, { variant: 'error' });
       setIsExporting(false);
+      setExportSessionId(null);
+      setExportProgress(null);
     }
   };
 
@@ -191,212 +318,452 @@ export default function AssetMetadataPage() {
     enqueueSnackbar('Copied to clipboard', { variant: 'info' });
   };
 
-  const renderStatCard = (title: string, stats: any, icon: React.ReactNode) => {
-    if (!stats) return null;
-    
-    return (
-      <Card>
-        <CardContent>
-          <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
-            {icon}
-            <Typography variant="h6" sx={{ ml: 1 }}>
-              {title}
-            </Typography>
-          </Box>
-          <Grid container spacing={2}>
-            <Grid item xs={6}>
-              <Typography variant="body2" color="text.secondary">
-                Total
-              </Typography>
-              <Typography variant="h4">{stats.total || 0}</Typography>
-            </Grid>
-            <Grid item xs={6}>
-              <Typography variant="body2" color="text.secondary">
-                Updated
-              </Typography>
-              <Typography variant="h4" color="primary">
-                {stats.updated || 0}
-              </Typography>
-            </Grid>
-            <Grid item xs={6}>
-              <Typography variant="body2" color="text.secondary">
-                Cached
-              </Typography>
-              <Typography variant="body1" color="success.main">
-                {stats.cached || 0}
-              </Typography>
-            </Grid>
-            <Grid item xs={6}>
-              <Typography variant="body2" color="text.secondary">
-                Errors
-              </Typography>
-              <Typography variant="body1" color="error.main">
-                {stats.errors || 0}
-              </Typography>
-            </Grid>
-          </Grid>
-        </CardContent>
-      </Card>
-    );
+  const handleRebuildIndex = async () => {
+    try {
+      setIsRebuildingIndex(true);
+      const response = await assetsApi.rebuildIndex();
+      
+      if (response.sessionId) {
+        setExportSessionId(response.sessionId);
+        enqueueSnackbar('Index and catalog rebuild started...', { variant: 'info' });
+      }
+    } catch (error: any) {
+      enqueueSnackbar(`Failed to rebuild index: ${error.message}`, { variant: 'error' });
+      setIsRebuildingIndex(false);
+    }
   };
+
+  const handleCancelExport = async () => {
+    try {
+      await assetsApi.cancelExportSession();
+      setIsExporting(false);
+      setExportingAssetType(null);
+      setExportSessionId(null);
+      setExportProgress(null);
+      enqueueSnackbar('Export cancelled successfully', { variant: 'info' });
+      
+      // Force a small delay to ensure backend has saved the cancelled state
+      await new Promise(resolve => setTimeout(resolve, 200));
+      
+      // Refresh the export summary and active sessions to get updated state
+      await queryClient.invalidateQueries({ queryKey: ['export-summary'] });
+      await queryClient.invalidateQueries({ queryKey: ['active-sessions'] });
+      
+      // Force refetch to ensure we get the latest state
+      queryClient.refetchQueries({ queryKey: ['active-sessions'] });
+    } catch (error: any) {
+      enqueueSnackbar(`Failed to cancel export: ${error.message}`, { variant: 'error' });
+    }
+  };
+
 
   return (
     <Box>
+      {/* Export Session Manager */}
+      <ExportSessionManager
+        currentSessionId={exportSessionId}
+        exportProgress={exportProgress}
+        onCancel={handleCancelExport}
+        onSessionChange={setHasActiveSession}
+      />
+
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 3 }}>
-        <Typography variant="h4">Asset Metadata Export</Typography>
-        <Stack direction="row" spacing={2}>
-          <Button
-            variant="outlined"
-            startIcon={<RefreshIcon />}
-            onClick={() => handleExport(false)}
-            disabled={isExporting}
+        <Box>
+          <Typography variant="h4">Asset Metadata Export</Typography>
+          <Typography variant="body2" color="text.secondary">
+            Export and cache QuickSight asset metadata for faster access
+          </Typography>
+        </Box>
+        <Stack direction="row" spacing={1.5}>
+          <Tooltip 
+            title={hasActiveSession 
+              ? "Complete or cancel the active session first" 
+              : "Export only new or modified assets since last export"}
+            arrow
+            placement="bottom"
           >
-            Refresh Cache
-          </Button>
-          <Button
-            variant="contained"
-            startIcon={<ExportIcon />}
-            onClick={() => handleExport(true)}
-            disabled={isExporting}
+            <span>
+              <Button
+                variant="contained"
+                startIcon={isExporting && !exportingAssetType ? <CircularProgress size={20} color="inherit" /> : <RefreshIcon />}
+                onClick={() => handleExport(false)}
+                disabled={isExporting || hasActiveSession}
+                sx={{
+                  minWidth: 140,
+                  height: 40,
+                  textTransform: 'none',
+                  fontWeight: 500,
+                  boxShadow: 1,
+                  '&:hover': {
+                    boxShadow: 2,
+                  },
+                }}
+              >
+                Refresh Cache
+              </Button>
+            </span>
+          </Tooltip>
+          
+          <Tooltip 
+            title={hasActiveSession 
+              ? "Complete or cancel the active session first" 
+              : "Rebuild the index from existing exported data without re-fetching from QuickSight"}
+            arrow
+            placement="bottom"
           >
-            Force Export All
-          </Button>
+            <span>
+              <Button
+                variant="outlined"
+                startIcon={isRebuildingIndex ? <CircularProgress size={20} /> : <BuildIcon />}
+                onClick={handleRebuildIndex}
+                disabled={isExporting || hasActiveSession || isRebuildingIndex}
+                sx={{
+                  minWidth: 140,
+                  height: 40,
+                  textTransform: 'none',
+                  fontWeight: 500,
+                  borderWidth: 2,
+                  '&:hover': {
+                    borderWidth: 2,
+                    backgroundColor: 'primary.50',
+                  },
+                }}
+              >
+                Rebuild Index
+              </Button>
+            </span>
+          </Tooltip>
+          
+          <Tooltip 
+            title={hasActiveSession 
+              ? "Complete or cancel the active session first" 
+              : "Delete all cached data and re-export everything from scratch (use with caution)"}
+            arrow
+            placement="bottom"
+          >
+            <span>
+              <Button
+                variant="outlined"
+                color="error"
+                startIcon={<ExportIcon />}
+                onClick={() => setForceExportDialogOpen(true)}
+                disabled={isExporting || hasActiveSession}
+                sx={{
+                  minWidth: 140,
+                  height: 40,
+                  textTransform: 'none',
+                  fontWeight: 500,
+                  borderWidth: 2,
+                  '&:hover': {
+                    borderWidth: 2,
+                    backgroundColor: 'error.50',
+                  },
+                }}
+              >
+                Force Export
+              </Button>
+            </span>
+          </Tooltip>
         </Stack>
       </Box>
 
-      {isExporting && exportProgress && (
-        <Paper sx={{ p: 3, mb: 3 }}>
-          <Typography variant="h6" gutterBottom>
-            Export Progress
+
+      {/* Indexed Assets Summary */}
+      <Paper sx={{ 
+        p: 3, 
+        mb: 3,
+        background: 'linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%)',
+        position: 'relative',
+        overflow: 'hidden',
+      }}>
+        <Box sx={{ position: 'relative', zIndex: 1 }}>
+          <Typography variant="h5" sx={{ mb: 3, fontWeight: 600 }}>
+            Indexed Assets Overview
           </Typography>
-          
-          {/* Overall Progress */}
-          <Box sx={{ mb: 3 }}>
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
-              <Typography variant="body2">
-                Overall Progress
-              </Typography>
-              <Typography variant="body2" color="text.secondary">
-                {exportProgress.startTime && `Duration: ${Math.round((Date.now() - new Date(exportProgress.startTime).getTime()) / 1000)}s`}
-              </Typography>
-            </Box>
-            <LinearProgress 
-              variant="determinate" 
-              value={exportProgress.progress ? 
-                (Object.values(exportProgress.progress).reduce((sum: number, p: any) => sum + (p.current || 0), 0) / 
-                 Math.max(1, Object.values(exportProgress.progress).reduce((sum: number, p: any) => sum + (p.total || 0), 0))) * 100 : 0
-              } 
-            />
-          </Box>
 
-          {/* Individual Asset Type Progress */}
+          {/* Main Asset Counts */}
+          <Grid container spacing={3} sx={{ mb: 4 }}>
+            <Grid item xs={6} sm={3}>
+              <Card sx={{ 
+                background: 'rgba(255, 255, 255, 0.9)',
+                backdropFilter: 'blur(10px)',
+                boxShadow: '0 8px 32px 0 rgba(31, 38, 135, 0.15)',
+                border: '1px solid rgba(255, 255, 255, 0.18)',
+                transition: 'transform 0.2s',
+                '&:hover': {
+                  transform: 'translateY(-4px)',
+                  boxShadow: '0 12px 40px 0 rgba(31, 38, 135, 0.25)',
+                },
+              }}>
+                <CardContent sx={{ textAlign: 'center', p: 2 }}>
+                  <Box sx={{ display: 'flex', justifyContent: 'center', mb: 1 }}>
+                    <DashboardIcon sx={{ fontSize: 40, color: 'primary.main' }} />
+                  </Box>
+                  <Typography variant="h4" sx={{ fontWeight: 700, color: 'primary.main' }}>
+                    {assetIndex?.assetCounts?.dashboards || 0}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Dashboards
+                  </Typography>
+                  <Box sx={{ mt: 1.5, display: 'flex', gap: 0.5, justifyContent: 'center' }}>
+                    <Tooltip title="Refresh dashboards">
+                      <IconButton
+                        size="small"
+                        onClick={() => handleExportAssetType('dashboards', false)}
+                        disabled={isExporting || hasActiveSession}
+                        sx={{ 
+                          bgcolor: 'primary.50',
+                          '&:hover': { bgcolor: 'primary.100' },
+                        }}
+                      >
+                        <RefreshIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                    <Tooltip title="Force export dashboards">
+                      <IconButton
+                        size="small"
+                        onClick={() => handleExportAssetType('dashboards', true)}
+                        disabled={isExporting || hasActiveSession}
+                        sx={{ 
+                          bgcolor: 'error.50',
+                          '&:hover': { bgcolor: 'error.100' },
+                        }}
+                      >
+                        <ExportIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                  </Box>
+                </CardContent>
+              </Card>
+            </Grid>
+            
+            <Grid item xs={6} sm={3}>
+              <Card sx={{ 
+                background: 'rgba(255, 255, 255, 0.9)',
+                backdropFilter: 'blur(10px)',
+                boxShadow: '0 8px 32px 0 rgba(31, 38, 135, 0.15)',
+                border: '1px solid rgba(255, 255, 255, 0.18)',
+                transition: 'transform 0.2s',
+                '&:hover': {
+                  transform: 'translateY(-4px)',
+                  boxShadow: '0 12px 40px 0 rgba(31, 38, 135, 0.25)',
+                },
+              }}>
+                <CardContent sx={{ textAlign: 'center', p: 2 }}>
+                  <Box sx={{ display: 'flex', justifyContent: 'center', mb: 1 }}>
+                    <DatasetIcon sx={{ fontSize: 40, color: 'success.main' }} />
+                  </Box>
+                  <Typography variant="h4" sx={{ fontWeight: 700, color: 'success.main' }}>
+                    {assetIndex?.assetCounts?.datasets || 0}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Datasets
+                  </Typography>
+                  <Box sx={{ mt: 1.5, display: 'flex', gap: 0.5, justifyContent: 'center' }}>
+                    <Tooltip title="Refresh datasets">
+                      <IconButton
+                        size="small"
+                        onClick={() => handleExportAssetType('datasets', false)}
+                        disabled={isExporting || hasActiveSession}
+                        sx={{ 
+                          bgcolor: 'success.50',
+                          '&:hover': { bgcolor: 'success.100' },
+                        }}
+                      >
+                        <RefreshIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                    <Tooltip title="Force export datasets">
+                      <IconButton
+                        size="small"
+                        onClick={() => handleExportAssetType('datasets', true)}
+                        disabled={isExporting || hasActiveSession}
+                        sx={{ 
+                          bgcolor: 'error.50',
+                          '&:hover': { bgcolor: 'error.100' },
+                        }}
+                      >
+                        <ExportIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                  </Box>
+                </CardContent>
+              </Card>
+            </Grid>
+            
+            <Grid item xs={6} sm={3}>
+              <Card sx={{ 
+                background: 'rgba(255, 255, 255, 0.9)',
+                backdropFilter: 'blur(10px)',
+                boxShadow: '0 8px 32px 0 rgba(31, 38, 135, 0.15)',
+                border: '1px solid rgba(255, 255, 255, 0.18)',
+                transition: 'transform 0.2s',
+                '&:hover': {
+                  transform: 'translateY(-4px)',
+                  boxShadow: '0 12px 40px 0 rgba(31, 38, 135, 0.25)',
+                },
+              }}>
+                <CardContent sx={{ textAlign: 'center', p: 2 }}>
+                  <Box sx={{ display: 'flex', justifyContent: 'center', mb: 1 }}>
+                    <AnalysisIcon sx={{ fontSize: 40, color: 'warning.main' }} />
+                  </Box>
+                  <Typography variant="h4" sx={{ fontWeight: 700, color: 'warning.main' }}>
+                    {assetIndex?.assetCounts?.analyses || 0}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Analyses
+                  </Typography>
+                  <Box sx={{ mt: 1.5, display: 'flex', gap: 0.5, justifyContent: 'center' }}>
+                    <Tooltip title="Refresh analyses">
+                      <IconButton
+                        size="small"
+                        onClick={() => handleExportAssetType('analyses', false)}
+                        disabled={isExporting || hasActiveSession}
+                        sx={{ 
+                          bgcolor: 'warning.50',
+                          '&:hover': { bgcolor: 'warning.100' },
+                        }}
+                      >
+                        <RefreshIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                    <Tooltip title="Force export analyses">
+                      <IconButton
+                        size="small"
+                        onClick={() => handleExportAssetType('analyses', true)}
+                        disabled={isExporting || hasActiveSession}
+                        sx={{ 
+                          bgcolor: 'error.50',
+                          '&:hover': { bgcolor: 'error.100' },
+                        }}
+                      >
+                        <ExportIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                  </Box>
+                </CardContent>
+              </Card>
+            </Grid>
+            
+            <Grid item xs={6} sm={3}>
+              <Card sx={{ 
+                background: 'rgba(255, 255, 255, 0.9)',
+                backdropFilter: 'blur(10px)',
+                boxShadow: '0 8px 32px 0 rgba(31, 38, 135, 0.15)',
+                border: '1px solid rgba(255, 255, 255, 0.18)',
+                transition: 'transform 0.2s',
+                '&:hover': {
+                  transform: 'translateY(-4px)',
+                  boxShadow: '0 12px 40px 0 rgba(31, 38, 135, 0.25)',
+                },
+              }}>
+                <CardContent sx={{ textAlign: 'center', p: 2 }}>
+                  <Box sx={{ display: 'flex', justifyContent: 'center', mb: 1 }}>
+                    <DatasourceIcon sx={{ fontSize: 40, color: 'info.main' }} />
+                  </Box>
+                  <Typography variant="h4" sx={{ fontWeight: 700, color: 'info.main' }}>
+                    {assetIndex?.assetCounts?.datasources || 0}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Datasources
+                  </Typography>
+                  <Box sx={{ mt: 1.5, display: 'flex', gap: 0.5, justifyContent: 'center' }}>
+                    <Tooltip title="Refresh datasources">
+                      <IconButton
+                        size="small"
+                        onClick={() => handleExportAssetType('datasources', false)}
+                        disabled={isExporting || hasActiveSession}
+                        sx={{ 
+                          bgcolor: 'info.50',
+                          '&:hover': { bgcolor: 'info.100' },
+                        }}
+                      >
+                        <RefreshIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                    <Tooltip title="Force export datasources">
+                      <IconButton
+                        size="small"
+                        onClick={() => handleExportAssetType('datasources', true)}
+                        disabled={isExporting || hasActiveSession}
+                        sx={{ 
+                          bgcolor: 'error.50',
+                          '&:hover': { bgcolor: 'error.100' },
+                        }}
+                      >
+                        <ExportIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                  </Box>
+                </CardContent>
+              </Card>
+            </Grid>
+          </Grid>
+
+          {/* Data Catalog Stats */}
           <Grid container spacing={2}>
-            {exportProgress.progress && Object.entries(exportProgress.progress).map(([assetType, progress]: [string, any]) => (
-              <Grid item xs={12} sm={6} md={3} key={assetType}>
-                <Card variant="outlined">
-                  <CardContent sx={{ py: 2 }}>
-                    <Typography variant="subtitle2" gutterBottom sx={{ textTransform: 'capitalize' }}>
-                      {assetType}
-                    </Typography>
-                    <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
-                      {progress.status === 'running' && <CircularProgress size={16} sx={{ mr: 1 }} />}
-                      {progress.status === 'completed' && (
-                        <Chip label="✓" size="small" color="success" sx={{ mr: 1, height: 20 }} />
-                      )}
-                      {progress.status === 'error' && (
-                        <Chip label="✗" size="small" color="error" sx={{ mr: 1, height: 20 }} />
-                      )}
-                      {progress.status === 'idle' && (
-                        <Chip label="-" size="small" sx={{ mr: 1, height: 20 }} />
-                      )}
-                      <Typography variant="body2">
-                        {progress.current || 0} / {progress.total || 0}
+            <Grid item xs={12} md={6}>
+              <Card sx={{ 
+                background: 'rgba(255, 255, 255, 0.8)',
+                backdropFilter: 'blur(5px)',
+              }}>
+                <CardContent>
+                  <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <TableIcon /> Data Catalog Insights
+                  </Typography>
+                  <Grid container spacing={2}>
+                    <Grid item xs={6}>
+                      <Typography variant="body2" color="text.secondary">Physical Fields</Typography>
+                      <Typography variant="h5" sx={{ fontWeight: 600 }}>
+                        {catalogData?.summary?.totalFields || 0}
                       </Typography>
-                    </Box>
-                    <Typography variant="caption" color="text.secondary" sx={{ 
-                      display: 'block',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap'
-                    }}>
-                      {progress.message}
-                    </Typography>
-                    {progress.duration && (
-                      <Typography variant="caption" color="text.secondary">
-                        ({(progress.duration / 1000).toFixed(1)}s)
+                    </Grid>
+                    <Grid item xs={6}>
+                      <Typography variant="body2" color="text.secondary">Calculated Fields</Typography>
+                      <Typography variant="h5" sx={{ fontWeight: 600 }}>
+                        {catalogData?.summary?.totalCalculatedFields || 0}
                       </Typography>
-                    )}
-                  </CardContent>
-                </Card>
-              </Grid>
-            ))}
-          </Grid>
-        </Paper>
-      )}
-
-      {exportSummary?.lastExport && (
-        <Paper sx={{ p: 3, mb: 3 }}>
-          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
-            <Typography variant="h6">Export Summary</Typography>
-            <Box>
-              <Chip
-                label={`Last export: ${formatDistanceToNow(new Date(exportSummary.lastExport.exportTime))} ago`}
-                color="primary"
-                variant="outlined"
-              />
-              <Chip
-                label={`Duration: ${(exportSummary.lastExport.duration / 1000).toFixed(1)}s`}
-                sx={{ ml: 1 }}
-                variant="outlined"
-              />
-            </Box>
-          </Box>
-
-          <Grid container spacing={3}>
-            <Grid item xs={12} md={3}>
-              {renderStatCard(
-                'Dashboards',
-                exportSummary.lastExport.dashboards,
-                <DashboardIcon color="primary" />
-              )}
+                    </Grid>
+                  </Grid>
+                </CardContent>
+              </Card>
             </Grid>
-            <Grid item xs={12} md={3}>
-              {renderStatCard(
-                'Datasets',
-                exportSummary.lastExport.datasets,
-                <DatasetIcon color="primary" />
-              )}
-            </Grid>
-            <Grid item xs={12} md={3}>
-              {renderStatCard(
-                'Analyses',
-                exportSummary.lastExport.analyses,
-                <AnalysisIcon color="primary" />
-              )}
-            </Grid>
-            <Grid item xs={12} md={3}>
-              {renderStatCard(
-                'Datasources',
-                exportSummary.lastExport.datasources,
-                <DatasourceIcon color="primary" />
-              )}
+            
+            <Grid item xs={12} md={6}>
+              <Card sx={{ 
+                background: 'rgba(255, 255, 255, 0.8)',
+                backdropFilter: 'blur(5px)',
+              }}>
+                <CardContent>
+                  <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <AssessmentIcon /> Storage Summary
+                  </Typography>
+                  <Grid container spacing={2}>
+                    <Grid item xs={6}>
+                      <Typography variant="body2" color="text.secondary">Total Size</Typography>
+                      <Typography variant="h5" sx={{ fontWeight: 600 }}>
+                        {assetIndex ? `${(assetIndex.totalSize / 1024 / 1024).toFixed(1)} MB` : '0 MB'}
+                      </Typography>
+                    </Grid>
+                    <Grid item xs={6}>
+                      <Typography variant="body2" color="text.secondary">Last Updated</Typography>
+                      <Typography variant="body1" sx={{ fontWeight: 500 }}>
+                        {catalogData?.summary?.lastUpdated 
+                          ? formatDistanceToNow(new Date(catalogData.summary.lastUpdated), { addSuffix: true })
+                          : 'Never'}
+                      </Typography>
+                    </Grid>
+                  </Grid>
+                </CardContent>
+              </Card>
             </Grid>
           </Grid>
-
-          <Box sx={{ mt: 3 }}>
-            <Typography variant="body2" color="text.secondary">
-              Total Assets: {exportSummary.totalAssets || 0}
-            </Typography>
-            <Typography variant="caption" color="text.secondary">
-              Export Time: {format(new Date(exportSummary.lastExport.exportTime), 'PPpp')}
-            </Typography>
-          </Box>
-        </Paper>
-      )}
+        </Box>
+      </Paper>
 
       {!exportSummary?.lastExport && !summaryLoading && (
         <Alert severity="info" sx={{ mb: 3 }}>
-          No assets have been exported yet. Click "Force Export All" to start the initial export.
+          No assets have been exported yet. Click "Refresh Cache" to start the initial export.
         </Alert>
       )}
 
@@ -422,12 +789,17 @@ export default function AssetMetadataPage() {
             </li>
             <li>
               <Typography variant="body2">
-                <strong>Shared Cache:</strong> All users share the same S3 cache, reducing API calls and improving performance
+                <strong>Resume Capability:</strong> Exports save progress after every 10 assets. If interrupted, the next export will skip already processed items
               </Typography>
             </li>
             <li>
               <Typography variant="body2">
-                <strong>Incremental Updates:</strong> Only changed assets are updated, making subsequent exports much faster
+                <strong>Error Resilience:</strong> Failed assets don't stop the export. Errors are logged and the export continues with remaining assets
+              </Typography>
+            </li>
+            <li>
+              <Typography variant="body2">
+                <strong>Incremental Updates:</strong> "Refresh Cache" only processes new or modified assets, while "Force Export" re-processes everything
               </Typography>
             </li>
             <li>
@@ -436,23 +808,71 @@ export default function AssetMetadataPage() {
               </Typography>
             </li>
           </ul>
+          <Alert severity="info" sx={{ mt: 2 }}>
+            <Typography variant="body2">
+              <strong>Tip:</strong> Use "Refresh Cache" for regular updates. Only use "Force Export All" if you suspect data corruption or after major changes.
+            </Typography>
+          </Alert>
         </TabPanel>
 
         <TabPanel value={tabValue} index={1}>
-          {assetsLoading ? (
-            <Box sx={{ display: 'flex', justifyContent: 'center', p: 3 }}>
-              <CircularProgress />
+          <Box sx={{ width: '100%' }}>
+            {/* Search and Filter Controls */}
+            <Box sx={{ display: 'flex', gap: 2, mb: 2 }}>
+              <TextField
+                label="Search assets..."
+                variant="outlined"
+                size="small"
+                value={assetsSearch}
+                onChange={(e) => {
+                  setAssetsSearch(e.target.value);
+                  setAssetsPage(0); // Reset to first page on search
+                }}
+                sx={{ flex: 1 }}
+                InputProps={{
+                  startAdornment: (
+                    <InputAdornment position="start">
+                      <SearchIcon />
+                    </InputAdornment>
+                  ),
+                }}
+              />
+              <FormControl size="small" sx={{ minWidth: 120 }}>
+                <InputLabel>Asset Type</InputLabel>
+                <Select
+                  value={assetsTypeFilter}
+                  onChange={(e) => {
+                    setAssetsTypeFilter(e.target.value);
+                    setAssetsPage(0); // Reset to first page on filter
+                  }}
+                  label="Asset Type"
+                >
+                  <MenuItem value="">All Types</MenuItem>
+                  <MenuItem value="dashboard">Dashboards</MenuItem>
+                  <MenuItem value="dataset">Datasets</MenuItem>
+                  <MenuItem value="analysis">Analyses</MenuItem>
+                  <MenuItem value="datasource">Datasources</MenuItem>
+                </Select>
+              </FormControl>
             </Box>
-          ) : assetsData?.assets && assetsData.assets.length > 0 ? (
-            <Box sx={{ width: '100%' }}>
+
+            {/* Summary Info */}
+            {assetsData && (
               <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
                 <Typography variant="h6">
-                  Exported Assets ({assetsData.assets.length} total)
+                  Exported Assets ({assetsData.pagination?.totalItems || 0} total)
                 </Typography>
                 <Typography variant="body2" color="text.secondary">
                   Total Size: {(assetsData.totalSize / 1024 / 1024).toFixed(2)} MB
                 </Typography>
               </Box>
+            )}
+
+            {assetsLoading ? (
+              <Box sx={{ display: 'flex', justifyContent: 'center', p: 3 }}>
+                <CircularProgress />
+              </Box>
+            ) : assetsData?.assets && assetsData.assets.length > 0 ? (
               <DataGrid
                 rows={assetsData.assets.map((asset: any, index: number) => ({
                   ...asset,
@@ -545,6 +965,13 @@ export default function AssetMetadataPage() {
                     flex: 0.5,
                     minWidth: 80,
                     renderCell: (params) => {
+                      if (!params.value || isNaN(params.value)) {
+                        return (
+                          <Typography variant="body2" color="text.secondary">
+                            -
+                          </Typography>
+                        );
+                      }
                       const kb = params.value / 1024;
                       const sizeStr = kb > 1024 ? 
                         `${(kb / 1024).toFixed(1)}M` : 
@@ -559,17 +986,42 @@ export default function AssetMetadataPage() {
                     },
                   },
                   {
-                    field: 'lastExported',
+                    field: 'lastModified',
                     headerName: 'Last Export',
                     flex: 0.8,
                     minWidth: 120,
-                    renderCell: (params) => (
-                      <Tooltip title={format(new Date(params.value), 'PPpp')}>
-                        <Typography variant="body2" sx={{ fontSize: '0.875rem' }}>
-                          {formatDistanceToNow(new Date(params.value), { addSuffix: true })}
-                        </Typography>
-                      </Tooltip>
-                    ),
+                    renderCell: (params) => {
+                      if (!params.value) {
+                        return (
+                          <Typography variant="body2" sx={{ fontSize: '0.875rem', color: 'text.secondary' }}>
+                            Unknown
+                          </Typography>
+                        );
+                      }
+                      try {
+                        const date = new Date(params.value);
+                        if (isNaN(date.getTime())) {
+                          return (
+                            <Typography variant="body2" sx={{ fontSize: '0.875rem', color: 'text.secondary' }}>
+                              Invalid date
+                            </Typography>
+                          );
+                        }
+                        return (
+                          <Tooltip title={format(date, 'PPpp')}>
+                            <Typography variant="body2" sx={{ fontSize: '0.875rem' }}>
+                              {formatDistanceToNow(date, { addSuffix: true })}
+                            </Typography>
+                          </Tooltip>
+                        );
+                      } catch (error) {
+                        return (
+                          <Typography variant="body2" sx={{ fontSize: '0.875rem', color: 'text.secondary' }}>
+                            Invalid date
+                          </Typography>
+                        );
+                      }
+                    },
                   },
                   {
                     field: 'actions',
@@ -582,8 +1034,9 @@ export default function AssetMetadataPage() {
                           <IconButton
                             size="small"
                             onClick={async () => {
+                              const assetType = params.row.type === 'analysis' ? 'analyses' : params.row.type + 's';
                               const response = await assetsApi.getAsset(
-                                params.row.type + 's', // Convert back to plural
+                                assetType,
                                 params.row.id
                               );
                               setSelectedAsset({
@@ -601,8 +1054,9 @@ export default function AssetMetadataPage() {
                             size="small"
                             onClick={async () => {
                               try {
+                                const assetType = params.row.type === 'analysis' ? 'analyses' : params.row.type + 's';
                                 const response = await assetsApi.parseAsset(
-                                  params.row.type + 's',
+                                  assetType,
                                   params.row.id
                                 );
                                 setParsedData(response);
@@ -620,8 +1074,9 @@ export default function AssetMetadataPage() {
                           <IconButton
                             size="small"
                             onClick={async () => {
+                              const assetType = params.row.type === 'analysis' ? 'analyses' : params.row.type + 's';
                               const response = await assetsApi.getAsset(
-                                params.row.type + 's',
+                                assetType,
                                 params.row.id
                               );
                               const blob = new Blob([JSON.stringify(response, null, 2)], { type: 'application/json' });
@@ -645,22 +1100,28 @@ export default function AssetMetadataPage() {
                 disableRowSelectionOnClick
                 columnBuffer={8}
                 columnThreshold={3}
+                paginationMode="server"
+                rowCount={assetsData.pagination?.totalItems || 0}
+                paginationModel={{
+                  page: assetsPage,
+                  pageSize: assetsPageSize,
+                }}
+                onPaginationModelChange={(model) => {
+                  setAssetsPage(model.page);
+                  setAssetsPageSize(model.pageSize);
+                }}
+                pageSizeOptions={[25, 50, 100]}
                 initialState={{
-                  pagination: {
-                    paginationModel: { pageSize: 25 },
-                  },
                   sorting: {
                     sortModel: [{ field: 'lastExported', sort: 'desc' }],
                   },
                 }}
-                pageSizeOptions={[25, 50, 100]}
                 slots={{
                   toolbar: GridToolbar,
                 }}
                 slotProps={{
                   toolbar: {
-                    showQuickFilter: true,
-                    quickFilterProps: { debounceMs: 500 },
+                    showQuickFilter: false, // Disabled since we have custom search
                   },
                 }}
                 sx={{
@@ -676,12 +1137,12 @@ export default function AssetMetadataPage() {
                   },
                 }}
               />
-            </Box>
-          ) : (
+            ) : (
             <Alert severity="info">
               No exported assets found. Run an export to see assets here.
             </Alert>
           )}
+          </Box>
         </TabPanel>
 
         <TabPanel value={tabValue} index={2}>
@@ -773,7 +1234,7 @@ export default function AssetMetadataPage() {
         fullWidth
       >
         <DialogTitle>
-          Parsed Asset Information
+          {selectedAsset?.type === 'error-details' ? selectedAsset.title : 'Parsed Asset Information'}
           <IconButton
             aria-label="close"
             onClick={() => setParseDialogOpen(false)}
@@ -783,7 +1244,31 @@ export default function AssetMetadataPage() {
           </IconButton>
         </DialogTitle>
         <DialogContent>
-          {parsedData && (
+          {selectedAsset?.type === 'error-details' && selectedAsset.errors && (
+            <Box>
+              <Typography variant="body1" color="text.secondary" gutterBottom>
+                The following errors occurred during the export process:
+              </Typography>
+              
+              <Box sx={{ maxHeight: 400, overflowY: 'auto' }}>
+                {selectedAsset.errors.map((error: any, index: number) => (
+                  <Paper key={index} sx={{ p: 2, mb: 2, backgroundColor: 'error.light', color: 'error.contrastText' }}>
+                    <Typography variant="subtitle2" sx={{ fontWeight: 'bold', mb: 1 }}>
+                      {error.assetName} ({error.assetId})
+                    </Typography>
+                    <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: '0.875rem', mb: 1 }}>
+                      {error.error}
+                    </Typography>
+                    <Typography variant="caption" color="inherit">
+                      {new Date(error.timestamp).toLocaleString()}
+                    </Typography>
+                  </Paper>
+                ))}
+              </Box>
+            </Box>
+          )}
+          
+          {parsedData && selectedAsset?.type !== 'error-details' && (
             <Box>
               <Typography variant="h6" gutterBottom>
                 {parsedData.assetType.charAt(0).toUpperCase() + parsedData.assetType.slice(1)}: {parsedData.assetName}
@@ -935,6 +1420,79 @@ export default function AssetMetadataPage() {
             </Box>
           )}
         </DialogContent>
+      </Dialog>
+
+      {/* Force Export Confirmation Dialog */}
+      <Dialog
+        open={forceExportDialogOpen}
+        onClose={() => setForceExportDialogOpen(false)}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle sx={{ color: 'warning.main' }}>
+          ⚠️ Confirm Force Export All
+        </DialogTitle>
+        <DialogContent>
+          <Alert severity="warning" sx={{ mb: 2 }}>
+            This action will DELETE all cached asset data and re-export everything from scratch!
+          </Alert>
+          
+          <Typography variant="body1" gutterBottom>
+            <strong>What this will do:</strong>
+          </Typography>
+          <Box component="ul" sx={{ pl: 2, mb: 2 }}>
+            <Typography component="li" variant="body2" sx={{ mb: 1 }}>
+              Delete all cached metadata files in S3
+            </Typography>
+            <Typography component="li" variant="body2" sx={{ mb: 1 }}>
+              Re-export ALL assets (dashboards, datasets, analyses, datasources)
+            </Typography>
+            <Typography component="li" variant="body2" sx={{ mb: 1 }}>
+              This process can take 15+ minutes for large accounts
+            </Typography>
+            <Typography component="li" variant="body2" sx={{ mb: 1 }}>
+              All progress from incremental exports will be lost
+            </Typography>
+          </Box>
+
+          <Alert severity="info" sx={{ mb: 2 }}>
+            <strong>When to use this:</strong>
+            <Box component="ul" sx={{ pl: 2, mt: 1 }}>
+              <Typography component="li" variant="body2" sx={{ mb: 0.5 }}>
+                Cached data appears corrupted or inconsistent
+              </Typography>
+              <Typography component="li" variant="body2" sx={{ mb: 0.5 }}>
+                Major structural changes to QuickSight assets
+              </Typography>
+              <Typography component="li" variant="body2" sx={{ mb: 0.5 }}>
+                Troubleshooting unexplained issues
+              </Typography>
+            </Box>
+          </Alert>
+
+          <Typography variant="body2" color="text.secondary">
+            In most cases, use "Refresh Cache" instead, which only exports new or modified assets.
+          </Typography>
+        </DialogContent>
+        <Box sx={{ display: 'flex', justifyContent: 'space-between', p: 2, pt: 0 }}>
+          <Button 
+            onClick={() => setForceExportDialogOpen(false)}
+            variant="contained"
+          >
+            Cancel
+          </Button>
+          <Button
+            onClick={() => {
+              setForceExportDialogOpen(false);
+              handleExport(true);
+            }}
+            variant="outlined"
+            color="warning"
+            startIcon={<ExportIcon />}
+          >
+            Yes, Delete All & Re-Export
+          </Button>
+        </Box>
       </Dialog>
     </Box>
   );

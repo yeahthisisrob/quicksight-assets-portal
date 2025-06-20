@@ -2,13 +2,46 @@ import axios from 'axios';
 import { ApiResponse, DashboardInfo, DashboardMetadata, TagInput } from '@/types';
 import { config } from '@/config';
 
-// Create axios instance - no AWS signing needed!
+// Create axios instance
 const apiClient = axios.create({
   baseURL: config.API_URL,
   headers: {
     'Content-Type': 'application/json',
   },
+  withCredentials: true, // Include cookies in requests
 });
+
+// Add request interceptor to include auth token
+apiClient.interceptors.request.use(
+  (config) => {
+    // Try to get token from localStorage first (set by AuthCallbackPage)
+    const token = localStorage.getItem('authToken');
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`;
+    }
+    return config;
+  },
+  (error) => {
+    return Promise.reject(error);
+  }
+);
+
+// Add response interceptor to handle auth errors
+apiClient.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      // Clear auth token and redirect to login
+      localStorage.removeItem('authToken');
+      // Only redirect if we're not already on the login page
+      if (!window.location.pathname.includes('/login') && 
+          !window.location.pathname.includes('/auth')) {
+        window.location.href = '/login?error=session_expired';
+      }
+    }
+    return Promise.reject(error);
+  }
+);
 
 // API methods
 export const dashboardsApi = {
@@ -115,6 +148,15 @@ export const assetsApi = {
     return response.data.data;
   },
 
+  // Get recent export sessions
+  async getRecentSessions(): Promise<any[]> {
+    const response = await apiClient.get<ApiResponse<any[]>>('/assets/export/sessions/recent');
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Failed to get recent sessions');
+    }
+    return response.data.data || [];
+  },
+
   // Export specific asset type
   async exportAssetType(assetType: string, forceRefresh = false): Promise<any> {
     const response = await apiClient.post<ApiResponse<any>>(`/assets/export/${assetType}`, { forceRefresh });
@@ -132,11 +174,85 @@ export const assetsApi = {
     }
   },
 
-  // Get all cached assets
-  async getAll(): Promise<any> {
-    const response = await apiClient.get<ApiResponse<any>>('/assets/all');
+  // Cancel export session
+  async cancelExportSession(): Promise<void> {
+    const response = await apiClient.post<ApiResponse<void>>('/assets/export/cancel');
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Failed to cancel export session');
+    }
+  },
+
+  // Rebuild index and catalog from existing exported data
+  async rebuildIndex(): Promise<any> {
+    const response = await apiClient.post<ApiResponse<any>>('/assets/rebuild-index');
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Failed to rebuild index');
+    }
+    return response.data.data;
+  },
+
+  // Get all cached assets with pagination
+  async getAll(params?: {
+    page?: number;
+    pageSize?: number;
+    search?: string;
+    assetType?: string;
+  }): Promise<any> {
+    const response = await apiClient.get<ApiResponse<any>>('/assets/all', { params });
     if (!response.data.success) {
       throw new Error(response.data.error || 'Failed to fetch assets');
+    }
+    return response.data.data;
+  },
+
+  // Get paginated datasets with full info
+  async getDatasetsPaginated(params?: {
+    page?: number;
+    pageSize?: number;
+    search?: string;
+  }): Promise<any> {
+    const response = await apiClient.get<ApiResponse<any>>('/assets/datasets/paginated', { params });
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Failed to fetch datasets');
+    }
+    return response.data.data;
+  },
+
+  // Get paginated dashboards with full info
+  async getDashboardsPaginated(params?: {
+    page?: number;
+    pageSize?: number;
+    search?: string;
+  }): Promise<any> {
+    const response = await apiClient.get<ApiResponse<any>>('/assets/dashboards/paginated', { params });
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Failed to fetch dashboards');
+    }
+    return response.data.data;
+  },
+
+  // Get paginated analyses with full info
+  async getAnalysesPaginated(params?: {
+    page?: number;
+    pageSize?: number;
+    search?: string;
+  }): Promise<any> {
+    const response = await apiClient.get<ApiResponse<any>>('/assets/analyses/paginated', { params });
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Failed to fetch analyses');
+    }
+    return response.data.data;
+  },
+
+  // Get paginated datasources with full info
+  async getDatasourcesPaginated(params?: {
+    page?: number;
+    pageSize?: number;
+    search?: string;
+  }): Promise<any> {
+    const response = await apiClient.get<ApiResponse<any>>('/assets/datasources/paginated', { params });
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Failed to fetch datasources');
     }
     return response.data.data;
   },
@@ -146,6 +262,22 @@ export const assetsApi = {
     const response = await apiClient.get<ApiResponse<any>>(`/assets/${assetType}/${assetId}`);
     if (!response.data.success) {
       throw new Error(response.data.error || 'Failed to fetch asset');
+    }
+    return response.data.data;
+  },
+
+  // Refresh tags for multiple assets
+  async refreshAssetTags(assetType: string, assetIds: string[]): Promise<{
+    successful: number;
+    failed: number;
+    total: number;
+  }> {
+    const response = await apiClient.post<ApiResponse<any>>('/assets/refresh-tags', {
+      assetType,
+      assetIds,
+    });
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Failed to refresh tags');
     }
     return response.data.data;
   },
@@ -171,11 +303,36 @@ export const assetsApi = {
 
 // Data Catalog API
 export const dataCatalogApi = {
-  // Get data catalog
-  async getDataCatalog(): Promise<any> {
-    const response = await apiClient.get<ApiResponse<any>>('/data-catalog');
+  // Get full catalog (no pagination)
+  async getCatalog(): Promise<any> {
+    const response = await apiClient.get<ApiResponse<any>>('/data-catalog/full');
     if (!response.data.success) {
       throw new Error(response.data.error || 'Failed to fetch data catalog');
+    }
+    return response.data.data;
+  },
+
+  // Get data catalog with pagination
+  async getDataCatalog(params?: {
+    page?: number;
+    pageSize?: number;
+    search?: string;
+    viewMode?: 'all' | 'fields' | 'calculated';
+    sortBy?: string;
+    sortOrder?: 'asc' | 'desc';
+  }): Promise<any> {
+    const response = await apiClient.get<ApiResponse<any>>('/data-catalog', { params });
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Failed to fetch data catalog');
+    }
+    return response.data.data;
+  },
+
+  // Force rebuild catalog
+  async rebuildCatalog(): Promise<any> {
+    const response = await apiClient.post<ApiResponse<any>>('/data-catalog/rebuild');
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Failed to rebuild data catalog');
     }
     return response.data.data;
   },
@@ -452,4 +609,96 @@ export const foldersApi = {
       throw new Error(response.data.error || 'Failed to remove tags');
     }
   },
+
+  // Add member to folder
+  async addMember(folderId: string, member: { MemberType: string; MemberId: string }): Promise<void> {
+    const response = await apiClient.post<ApiResponse<any>>(
+      `/folders/${folderId}/members`,
+      member
+    );
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Failed to add member');
+    }
+  },
+
+  // Get folder members
+  async getMembers(folderId: string): Promise<any[]> {
+    const response = await apiClient.get<ApiResponse<any[]>>(
+      `/folders/${folderId}/members`
+    );
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Failed to get folder members');
+    }
+    return response.data.data || [];
+  },
+
+  // Remove member from folder
+  async removeMember(folderId: string, memberId: string, memberType: string): Promise<void> {
+    const response = await apiClient.delete<ApiResponse<any>>(
+      `/folders/${folderId}/members/${memberId}`,
+      { params: { memberType } }
+    );
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Failed to remove member');
+    }
+  },
+};
+
+// Settings API
+export const settingsApi = {
+  getAll: () => apiClient.get<Record<string, any>>('/settings').then(res => res.data),
+  get: (key: string) => apiClient.get<any>(`/settings/${key}`).then(res => res.data),
+  update: (key: string, value: any) => apiClient.put(`/settings/${key}`, { value }).then(res => res.data),
+  delete: (key: string) => apiClient.delete(`/settings/${key}`).then(res => res.data),
+};
+
+// Semantic Layer API
+export const semanticApi = {
+  // Terms
+  getTerms: (params?: { search?: string; category?: string }) => 
+    apiClient.get('/semantic/terms', { params }).then(res => res.data),
+  getTerm: (termId: string) => 
+    apiClient.get(`/semantic/terms/${termId}`).then(res => res.data),
+  createTerm: (term: any) => 
+    apiClient.post('/semantic/terms', term).then(res => res.data),
+  updateTerm: (termId: string, updates: any) => 
+    apiClient.put(`/semantic/terms/${termId}`, updates).then(res => res.data),
+  deleteTerm: (termId: string) => 
+    apiClient.delete(`/semantic/terms/${termId}`).then(res => res.data),
+    
+  // Categories
+  getCategories: () => 
+    apiClient.get('/semantic/categories').then(res => res.data),
+  createCategory: (category: any) => 
+    apiClient.post('/semantic/categories', category).then(res => res.data),
+    
+  // Mappings
+  getMappings: (params?: { fieldId?: string; status?: string; type?: string }) => 
+    apiClient.get('/semantic/mappings', { params }).then(res => res.data),
+  getFieldMapping: (fieldId: string) => 
+    apiClient.get(`/semantic/mappings/field/${fieldId}`).then(res => res.data),
+  createMapping: (mapping: any) => 
+    apiClient.post('/semantic/mappings', mapping).then(res => res.data),
+  approveMapping: (mappingId: string) => 
+    apiClient.post(`/semantic/mappings/${mappingId}/approve`).then(res => res.data),
+  rejectMapping: (mappingId: string, reason?: string) => 
+    apiClient.post(`/semantic/mappings/${mappingId}/reject`, { reason }).then(res => res.data),
+  suggestMappings: (field: any) => 
+    apiClient.post('/semantic/mappings/suggest', field).then(res => res.data),
+  autoMap: (minConfidence?: number) => 
+    apiClient.post('/semantic/mappings/auto-map', { minConfidence }).then(res => res.data),
+    
+  // Unmapped fields
+  getUnmappedFields: () => 
+    apiClient.get('/semantic/unmapped').then(res => res.data),
+    
+  // Stats
+  getStats: () => 
+    apiClient.get('/semantic/stats').then(res => res.data),
+    
+  // Import/Export
+  importTerms: (terms: any[]) => 
+    apiClient.post('/semantic/terms/import', { terms }).then(res => res.data),
+  exportTerms: () => 
+    apiClient.get('/semantic/terms/export').then(res => res.data),
 };

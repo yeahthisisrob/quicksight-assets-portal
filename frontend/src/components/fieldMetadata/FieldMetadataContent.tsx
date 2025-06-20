@@ -38,6 +38,7 @@ interface FieldMetadataContentProps {
     type?: string;
     expression?: string;
   };
+  onUpdate?: (metadata: any) => void;
 }
 
 interface Tag {
@@ -83,7 +84,7 @@ const piiCategories = [
   'Other',
 ];
 
-export default function FieldMetadataContent({ sourceType, sourceId, field }: FieldMetadataContentProps) {
+export default function FieldMetadataContent({ sourceType, sourceId, field, onUpdate }: FieldMetadataContentProps) {
   const { enqueueSnackbar } = useSnackbar();
   const queryClient = useQueryClient();
   const [saving, setSaving] = useState(false);
@@ -115,7 +116,6 @@ export default function FieldMetadataContent({ sourceType, sourceId, field }: Fi
   
   // Validation rules
   const [validationRules, setValidationRules] = useState<string[]>([]);
-  const [newValidationRule, setNewValidationRule] = useState('');
 
   // Fetch existing metadata
   const { data: metadata, isLoading } = useQuery({
@@ -220,8 +220,14 @@ export default function FieldMetadataContent({ sourceType, sourceId, field }: Fi
       // Invalidate queries to refresh data
       queryClient.invalidateQueries({ queryKey: ['field-metadata', sourceType, sourceId, field.name] });
       queryClient.invalidateQueries({ queryKey: ['field-tag-search'] });
-      // Also invalidate the data catalog to refresh tags display
+      // Also invalidate data catalog queries if they exist
       queryClient.invalidateQueries({ queryKey: ['data-catalog'] });
+      queryClient.invalidateQueries({ queryKey: ['data-catalog-paginated'] });
+      
+      // Call the onUpdate callback if provided
+      if (onUpdate) {
+        onUpdate(updatedMetadata);
+      }
       
       enqueueSnackbar('Field metadata updated successfully', { variant: 'success' });
     } catch (error) {

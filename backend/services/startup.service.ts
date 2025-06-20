@@ -12,24 +12,26 @@ export class StartupService {
   }
 
   async validateAndInitialize(): Promise<void> {
-    logger.info('Starting application initialization...');
+    logger.info('Starting application initialization');
 
     try {
       // Validate AWS credentials and get identity
-      logger.info('Validating AWS credentials...');
+      logger.debug('Validating AWS credentials');
       const identity = await this.awsIdentityService.getIdentity();
       
-      logger.info(`AWS Account ID: ${identity.accountId}`);
-      logger.info(`AWS Region: ${identity.region}`);
-      logger.info(`Authentication method: ${identity.authMethod}`);
-      logger.info(`Identity ARN: ${identity.arn}`);
+      logger.info('AWS identity validated', {
+        accountId: identity.accountId,
+        region: identity.region,
+        authMethod: identity.authMethod,
+        identityArn: identity.arn,
+      });
 
       // Initialize S3 bucket
-      logger.info('Initializing S3 bucket...');
+      logger.debug('Initializing S3 bucket');
       await this.metadataService.initializeBucket();
-      logger.info('S3 bucket initialization complete');
+      logger.debug('S3 bucket initialization complete');
 
-      logger.info('Application initialization complete');
+      logger.info('Application initialized successfully');
     } catch (error) {
       logger.error('Application initialization failed:', error);
       throw error;

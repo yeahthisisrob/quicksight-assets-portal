@@ -42,7 +42,7 @@ export class DashboardService {
           const dashboardPromises = response.DashboardSummaryList.map(async (summary) => {
             if (!summary.DashboardId) return null;
             
-            const [details, permissions, metadata] = await Promise.all([
+            const [, permissions, metadata] = await Promise.all([
               this.getDashboardDetails(summary.DashboardId),
               this.getDashboardPermissions(summary.DashboardId),
               this.metadataService.getMetadata(summary.DashboardId),

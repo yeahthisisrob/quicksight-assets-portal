@@ -1,11 +1,8 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { useNavigate } from 'react-router-dom';
 import {
   Box,
   Paper,
-  TextField,
-  InputAdornment,
   Typography,
   Chip,
   IconButton,
@@ -17,7 +14,6 @@ import {
   DialogContent,
   DialogActions,
   Button,
-  Stack,
 } from '@mui/material';
 import {
   DataGrid,
@@ -26,7 +22,6 @@ import {
   GridToolbar,
 } from '@mui/x-data-grid';
 import {
-  Search as SearchIcon,
   Edit as EditIcon,
   FolderOpen as FolderIcon,
   Close as CloseIcon,
@@ -54,9 +49,7 @@ interface FolderMetadata {
 }
 
 export default function FoldersPage() {
-  const navigate = useNavigate();
   const { enqueueSnackbar } = useSnackbar();
-  const [searchTerm, setSearchTerm] = useState('');
   const [permissionsDialog, setPermissionsDialog] = useState<{ open: boolean; folder?: any }>({ open: false });
   const [tagsDialog, setTagsDialog] = useState<{ open: boolean; folder?: any }>({ open: false });
   const [metadataDialog, setMetadataDialog] = useState<{ open: boolean; folder?: any }>({ open: false });
@@ -65,6 +58,32 @@ export default function FoldersPage() {
   const { data: folders = [], isLoading, error, refetch } = useQuery({
     queryKey: ['folders'],
     queryFn: () => foldersApi.list(),
+  });
+
+  // Fetch member counts for folders
+  const { data: folderMembers = {} } = useQuery({
+    queryKey: ['folder-members', folders],
+    queryFn: async () => {
+      if (!folders || folders.length === 0) return {};
+      
+      const memberCounts: Record<string, number> = {};
+      
+      // Fetch member counts for each folder
+      await Promise.all(
+        folders.map(async (folder: any) => {
+          try {
+            const members = await foldersApi.getMembers(folder.FolderId);
+            memberCounts[folder.FolderId] = members.length;
+          } catch (error) {
+            // If error, assume 0 members
+            memberCounts[folder.FolderId] = 0;
+          }
+        })
+      );
+      
+      return memberCounts;
+    },
+    enabled: folders.length > 0,
   });
 
   // Fetch live tags for all folders when folder data changes
@@ -102,16 +121,6 @@ export default function FoldersPage() {
     }
   }, [error, enqueueSnackbar]);
 
-  const filteredFolders = useMemo(() => {
-    return folders.filter(folder => {
-      const matchesSearch = searchTerm === '' || 
-        folder.Name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        folder.FolderId?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        folder.metadata?.description?.toLowerCase().includes(searchTerm.toLowerCase());
-      
-      return matchesSearch;
-    });
-  }, [folders, searchTerm]);
 
   const handleMetadataUpdate = async (folderId: string, metadata: FolderMetadata) => {
     try {
@@ -204,24 +213,63 @@ export default function FoldersPage() {
       ),
     },
     {
+      field: 'members',
+      headerName: 'Members',
+      width: 100,
+      align: 'center',
+      renderCell: (params: GridRenderCellParams) => {
+        const memberCount = folderMembers[params.row.FolderId] || 0;
+        return (
+          <Chip 
+            label={memberCount} 
+            size="small" 
+            color={memberCount > 0 ? 'primary' : 'default'}
+          />
+        );
+      },
+      valueGetter: (params) => folderMembers[params.row.FolderId] || 0,
+    },
+    {
       field: 'CreatedTime',
       headerName: 'Created',
       width: 150,
-      renderCell: (params: GridRenderCellParams) => (
-        <Typography variant="body2">
-          {params.value ? format(new Date(params.value), 'MMM d, yyyy') : 'N/A'}
-        </Typography>
-      ),
+      renderCell: (params: GridRenderCellParams) => {
+        if (!params.value) {
+          return <Typography variant="body2">-</Typography>;
+        }
+        
+        const date = new Date(params.value);
+        if (isNaN(date.getTime())) {
+          return <Typography variant="body2">Invalid date</Typography>;
+        }
+        
+        return (
+          <Typography variant="body2">
+            {format(date, 'MMM d, yyyy')}
+          </Typography>
+        );
+      },
     },
     {
       field: 'LastUpdatedTime',
       headerName: 'Last Updated',
       width: 150,
-      renderCell: (params: GridRenderCellParams) => (
-        <Typography variant="body2">
-          {params.value ? format(new Date(params.value), 'MMM d, yyyy') : 'N/A'}
-        </Typography>
-      ),
+      renderCell: (params: GridRenderCellParams) => {
+        if (!params.value) {
+          return <Typography variant="body2">-</Typography>;
+        }
+        
+        const date = new Date(params.value);
+        if (isNaN(date.getTime())) {
+          return <Typography variant="body2">Invalid date</Typography>;
+        }
+        
+        return (
+          <Typography variant="body2">
+            {format(date, 'MMM d, yyyy')}
+          </Typography>
+        );
+      },
     },
     {
       field: 'permissions',
@@ -319,49 +367,29 @@ export default function FoldersPage() {
   }
 
   return (
-    <>
     <Box>
-      <Typography variant="h4" gutterBottom>
-        QuickSight Folders
-      </Typography>
-      
-      <Paper sx={{ p: 2, mb: 2 }}>
-        <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
-          <TextField
-            placeholder="Search folders..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            InputProps={{
-              startAdornment: (
-                <InputAdornment position="start">
-                  <SearchIcon />
-                </InputAdornment>
-              ),
-            }}
-            sx={{ flexGrow: 1, maxWidth: 400 }}
-          />
-          
-          <Box sx={{ flexGrow: 1 }} />
-          
-          <Button
-            variant="outlined"
-            startIcon={<RefreshIcon />}
-            onClick={() => refetch()}
-            disabled={isLoading}
-          >
-            Refresh
-          </Button>
-          
-          <Typography variant="body2" color="text.secondary">
-            {filteredFolders.length} folders
+      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 3 }}>
+        <Box>
+          <Typography variant="h4">QuickSight Folders</Typography>
+          <Typography variant="body1" color="text.secondary">
+            Manage and organize your QuickSight folders
           </Typography>
         </Box>
-      </Paper>
+        <Button
+          variant="outlined"
+          startIcon={<RefreshIcon />}
+          onClick={() => refetch()}
+          disabled={isLoading}
+        >
+          Refresh
+        </Button>
+      </Box>
 
-      <Paper sx={{ height: 600, width: '100%' }}>
+      <Paper>
         <DataGrid
-          rows={filteredFolders}
+          rows={folders}
           columns={columns}
+          autoHeight
           getRowId={(row) => row.FolderId}
           loading={isLoading}
           slots={{
@@ -388,6 +416,14 @@ export default function FoldersPage() {
           }}
           pageSizeOptions={[25, 50, 100]}
           disableRowSelectionOnClick
+          sx={{
+            '& .MuiDataGrid-columnHeader': {
+              backgroundColor: 'action.hover',
+            },
+            '& .MuiDataGrid-columnHeaderTitle': {
+              fontWeight: 'bold',
+            },
+          }}
         />
       </Paper>
 
@@ -463,6 +499,5 @@ export default function FoldersPage() {
         </DialogActions>
       </Dialog>
     </Box>
-    </>
   );
 }

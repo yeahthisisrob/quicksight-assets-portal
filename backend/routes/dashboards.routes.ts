@@ -21,7 +21,7 @@ router.get('/', asyncHandler(async (req, res) => {
         dashboards.map(async (dashboard) => {
           const usage = await metricsService.getDashboardUsage(dashboard.dashboardArn);
           return { ...dashboard, usage };
-        })
+        }),
       );
       
       res.json({

@@ -24,6 +24,8 @@ import {
   VpnKey as KeyIcon,
   Badge as BadgeIcon,
   Cloud as CloudIcon,
+  Computer as ComputerIcon,
+  Dns as DnsIcon,
 } from '@mui/icons-material';
 import { useSnackbar } from 'notistack';
 import { config } from '@/config';
@@ -43,6 +45,22 @@ export default function SettingsPage() {
   const [awsIdentity, setAwsIdentity] = useState<AWSIdentity | null>(null);
   const [identityLoading, setIdentityLoading] = useState(true);
   const [identityError, setIdentityError] = useState<string | null>(null);
+  
+  // Detect environment
+  const isLocalEnvironment = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+  const isAWSEnvironment = window.location.hostname.includes('cloudfront.net') || window.location.hostname.includes('amazonaws.com');
+  const environmentName = isLocalEnvironment ? 'Local Development' : isAWSEnvironment ? 'AWS Production' : 'Custom Environment';
+  
+  // Get session info from token if available
+  const sessionToken = localStorage.getItem('authToken');
+  const sessionInfo = sessionToken ? (() => {
+    try {
+      const decoded = JSON.parse(atob(sessionToken));
+      return decoded;
+    } catch {
+      return null;
+    }
+  })() : null;
   
   // AWS Settings
   const [awsProfile, setAwsProfile] = useState(
@@ -75,7 +93,9 @@ export default function SettingsPage() {
         setAwsIdentity(response.data.data);
       }
     } catch (error: any) {
-      setIdentityError(error.response?.data?.error || 'Failed to fetch AWS identity');
+      setIdentityError(error.response?.status === 401 
+        ? 'Authentication required' 
+        : error.response?.data?.error || 'Failed to fetch AWS identity');
     } finally {
       setIdentityLoading(false);
     }
@@ -105,6 +125,45 @@ export default function SettingsPage() {
       <Typography variant="h4" gutterBottom>
         Settings
       </Typography>
+
+      {/* Environment Status Banner */}
+      <Paper 
+        sx={{ 
+          p: 2, 
+          mb: 3, 
+          background: isAWSEnvironment 
+            ? 'linear-gradient(135deg, #232F3E 0%, #FF9900 100%)' 
+            : isLocalEnvironment 
+            ? 'linear-gradient(135deg, #1976d2 0%, #42a5f5 100%)'
+            : 'linear-gradient(135deg, #616161 0%, #9e9e9e 100%)',
+          color: 'white'
+        }}
+      >
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+          {isAWSEnvironment ? <CloudIcon sx={{ fontSize: 48 }} /> : <ComputerIcon sx={{ fontSize: 48 }} />}
+          <Box flex={1}>
+            <Typography variant="h5" sx={{ fontWeight: 'bold' }}>
+              {environmentName}
+            </Typography>
+            <Typography variant="body1" sx={{ opacity: 0.9 }}>
+              {isAWSEnvironment 
+                ? `Running on AWS CloudFront • ${window.location.hostname}`
+                : isLocalEnvironment 
+                ? `Running locally • ${window.location.hostname}:${window.location.port || '80'}`
+                : `Running on ${window.location.hostname}`}
+            </Typography>
+          </Box>
+          <Chip 
+            icon={<DnsIcon />}
+            label={isAWSEnvironment ? 'Production' : isLocalEnvironment ? 'Development' : 'Custom'}
+            sx={{ 
+              backgroundColor: 'rgba(255,255,255,0.2)', 
+              color: 'white',
+              fontWeight: 'bold'
+            }}
+          />
+        </Box>
+      </Paper>
 
       <Grid container spacing={3}>
         <Grid item xs={12} md={6}>
@@ -201,7 +260,79 @@ export default function SettingsPage() {
                 <CircularProgress />
               </Box>
             ) : identityError ? (
-              <Alert severity="error">{identityError}</Alert>
+              <Box>
+                {isAWSEnvironment && sessionInfo ? (
+                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                    <Alert severity="info" sx={{ mb: 2 }}>
+                      Running with Cognito authentication. Using temporary AWS credentials from your session.
+                    </Alert>
+                    
+                    {sessionInfo.user && (
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                        <AccountIcon color="action" />
+                        <Box>
+                          <Typography variant="body2" color="text.secondary">
+                            Cognito User
+                          </Typography>
+                          <Typography variant="body1">
+                            {sessionInfo.user.email}
+                          </Typography>
+                          {sessionInfo.user.name && (
+                            <Typography variant="caption" color="text.secondary">
+                              {sessionInfo.user.name}
+                            </Typography>
+                          )}
+                        </Box>
+                      </Box>
+                    )}
+                    
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <KeyIcon color="action" />
+                      <Box>
+                        <Typography variant="body2" color="text.secondary">
+                          Authentication Method
+                        </Typography>
+                        <Chip 
+                          label={sessionInfo.authMethod === 'cognito' ? 'AWS Cognito' : sessionInfo.authMethod}
+                          size="small"
+                          color="success"
+                        />
+                      </Box>
+                    </Box>
+                    
+                    {sessionInfo.credentials && (
+                      <>
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                          <BadgeIcon color="action" />
+                          <Box flex={1}>
+                            <Typography variant="body2" color="text.secondary">
+                              IAM Role ARN
+                            </Typography>
+                            <Typography variant="body2" fontFamily="monospace" sx={{ wordBreak: 'break-all' }}>
+                              {/* Role ARN is dynamically determined by CDK deployment */}
+                              QuicksightPortalStack-CognitoAuthRole-*
+                            </Typography>
+                          </Box>
+                        </Box>
+                        
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                          <CloudIcon color="action" />
+                          <Box>
+                            <Typography variant="body2" color="text.secondary">
+                              Session Expiration
+                            </Typography>
+                            <Typography variant="body1">
+                              {new Date(sessionInfo.expiresAt).toLocaleString()}
+                            </Typography>
+                          </Box>
+                        </Box>
+                      </>
+                    )}
+                  </Box>
+                ) : (
+                  <Alert severity="error">{identityError}</Alert>
+                )}
+              </Box>
             ) : awsIdentity ? (
               <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
@@ -271,17 +402,73 @@ export default function SettingsPage() {
 
           <Paper sx={{ p: 3 }}>
             <Typography variant="h6" gutterBottom>
-              API Information
+              Environment Details
             </Typography>
-            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-              <Typography variant="body2">
-                <strong>API URL:</strong> {config.API_URL}
-              </Typography>
-              <Typography variant="body2">
-                <strong>Environment:</strong> {config.ENVIRONMENT}
-              </Typography>
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <Box>
+                <Typography variant="body2" color="text.secondary">
+                  Frontend URL
+                </Typography>
+                <Typography variant="body1" fontFamily="monospace" sx={{ wordBreak: 'break-all' }}>
+                  {window.location.origin}
+                </Typography>
+              </Box>
+              
+              <Box>
+                <Typography variant="body2" color="text.secondary">
+                  API Endpoint
+                </Typography>
+                <Typography variant="body1" fontFamily="monospace" sx={{ wordBreak: 'break-all' }}>
+                  {config.API_URL}
+                </Typography>
+              </Box>
+              
+              <Box>
+                <Typography variant="body2" color="text.secondary">
+                  Configuration
+                </Typography>
+                <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mt: 0.5 }}>
+                  <Chip 
+                    size="small" 
+                    label={`Environment: ${config.ENVIRONMENT}`}
+                    color={config.ENVIRONMENT === 'production' ? 'success' : 'primary'}
+                  />
+                  <Chip 
+                    size="small" 
+                    label={`Region: ${config.AWS_REGION}`}
+                  />
+                  {isAWSEnvironment && (
+                    <Chip 
+                      size="small" 
+                      label="CDK Deployed"
+                      color="secondary"
+                    />
+                  )}
+                  {isLocalEnvironment && (
+                    <Chip 
+                      size="small" 
+                      label="Local Dev Server"
+                      color="info"
+                    />
+                  )}
+                </Box>
+              </Box>
+              
+              {isAWSEnvironment && (
+                <Alert severity="info" sx={{ mt: 1 }}>
+                  This instance is deployed on AWS using CDK. Authentication is handled by AWS Cognito.
+                </Alert>
+              )}
+              
+              {isLocalEnvironment && (
+                <Alert severity="warning" sx={{ mt: 1 }}>
+                  Running in local development mode. Some features may behave differently than in production.
+                </Alert>
+              )}
             </Box>
+            
             <Divider sx={{ my: 2 }} />
+            
             <Button
               variant="outlined"
               startIcon={<RefreshIcon />}

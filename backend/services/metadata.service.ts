@@ -9,6 +9,7 @@ import {
   PutBucketLifecycleConfigurationCommand,
   PutBucketVersioningCommand,
   ListObjectsV2Command,
+  DeleteObjectCommand,
 } from '@aws-sdk/client-s3';
 import { DashboardMetadata } from '../types';
 import { logger } from '../utils/logger';
@@ -22,7 +23,7 @@ export class MetadataService {
   constructor() {
     this.s3Client = new S3Client(getAwsConfig());
     this.bucketName = process.env.BUCKET_NAME || 'quicksight-metadata-bucket';
-    logger.info(`MetadataService initialized with bucket: ${this.bucketName}`);
+    logger.debug('MetadataService initialized', { bucket: this.bucketName });
   }
 
   async initializeBucket(): Promise<void> {
@@ -34,12 +35,12 @@ export class MetadataService {
       // Check if bucket exists
       const headCommand = new HeadBucketCommand({ Bucket: this.bucketName });
       await this.s3Client.send(headCommand);
-      logger.info(`S3 bucket '${this.bucketName}' already exists`);
+      logger.debug('S3 bucket exists', { bucket: this.bucketName });
       this.bucketInitialized = true;
       return;
     } catch (error: any) {
       if (error.name === 'NotFound' || error.$metadata?.httpStatusCode === 404) {
-        logger.info(`S3 bucket '${this.bucketName}' does not exist, attempting to create...`);
+        logger.info('Creating S3 bucket', { bucket: this.bucketName });
         
         try {
           // Create bucket
@@ -57,7 +58,7 @@ export class MetadataService {
           
           const createCommand = new CreateBucketCommand(createBucketConfig);
           await this.s3Client.send(createCommand);
-          logger.info(`S3 bucket '${this.bucketName}' created successfully`);
+          logger.info('S3 bucket created', { bucket: this.bucketName });
 
           // Enable versioning
           const versioningCommand = new PutBucketVersioningCommand({
@@ -67,7 +68,7 @@ export class MetadataService {
             },
           });
           await this.s3Client.send(versioningCommand);
-          logger.info(`Versioning enabled for bucket '${this.bucketName}'`);
+          logger.debug('Bucket versioning enabled', { bucket: this.bucketName });
 
           // Set CORS configuration
           const corsCommand = new PutBucketCorsCommand({
@@ -85,7 +86,7 @@ export class MetadataService {
             },
           });
           await this.s3Client.send(corsCommand);
-          logger.info(`CORS configuration set for bucket '${this.bucketName}'`);
+          logger.debug('Bucket CORS configured', { bucket: this.bucketName });
 
           // Set lifecycle policy to delete old versions after 30 days
           const lifecycleCommand = new PutBucketLifecycleConfigurationCommand({
@@ -106,29 +107,33 @@ export class MetadataService {
             },
           });
           await this.s3Client.send(lifecycleCommand);
-          logger.info(`Lifecycle policy set for bucket '${this.bucketName}'`);
+          logger.debug('Bucket lifecycle policy set', { bucket: this.bucketName });
 
           this.bucketInitialized = true;
         } catch (createError: any) {
-          logger.error(`Failed to create S3 bucket '${this.bucketName}':`, createError);
+          logger.error('Failed to create S3 bucket', { bucket: this.bucketName, error: createError.message });
           throw new Error(`Cannot create S3 bucket '${this.bucketName}': ${createError.message}. Please create the bucket manually or ensure you have the necessary permissions.`);
         }
       } else if (error.name === 'AccessDenied' || error.name === 'Forbidden') {
-        logger.error(`Access denied to S3 bucket '${this.bucketName}'`);
+        logger.error('Access denied to S3 bucket', { bucket: this.bucketName });
         throw new Error(`Access denied to S3 bucket '${this.bucketName}'. Please check your AWS credentials and permissions.`);
       } else {
-        logger.error(`Error checking S3 bucket '${this.bucketName}':`, error);
-        logger.error(`Error code: ${error.name}, Status: ${error.$metadata?.httpStatusCode}`);
+        logger.error('Error checking S3 bucket', { 
+          bucket: this.bucketName, 
+          errorCode: error.name, 
+          httpStatus: error.$metadata?.httpStatusCode,
+          error: error.message,
+        });
         
         // If it's a 403, it might be due to permissions or the bucket existing in another account
         if (error.$metadata?.httpStatusCode === 403 || error.name === '403') {
           throw new Error(`Access forbidden to S3 bucket '${this.bucketName}'. This could mean:\n` +
-            `1. The bucket exists but is owned by another AWS account\n` +
-            `2. Your AWS credentials lack s3:HeadBucket permissions\n` +
-            `3. The bucket has a bucket policy that denies access\n\n` +
-            `Please either:\n` +
-            `- Choose a different bucket name in your .env file\n` +
-            `- Ensure you have proper S3 permissions\n` +
+            '1. The bucket exists but is owned by another AWS account\n' +
+            '2. Your AWS credentials lack s3:HeadBucket permissions\n' +
+            '3. The bucket has a bucket policy that denies access\n\n' +
+            'Please either:\n' +
+            '- Choose a different bucket name in your .env file\n' +
+            '- Ensure you have proper S3 permissions\n' +
             `- Create the bucket manually with: aws s3 mb s3://${this.bucketName}`);
         }
         
@@ -254,6 +259,26 @@ export class MetadataService {
     } catch (error) {
       logger.error(`Error listing objects with prefix ${prefix}:`, error);
       return [];
+    }
+  }
+
+  async deleteMetadata(key: string): Promise<void> {
+    await this.initializeBucket();
+    // If key already has a path (contains /), use it as-is
+    // Otherwise, it's a dashboard ID for backward compatibility
+    const fullKey = key.includes('/') ? key : `metadata/${key}.json`;
+    
+    try {
+      const command = new DeleteObjectCommand({
+        Bucket: this.bucketName,
+        Key: fullKey,
+      });
+
+      await this.s3Client.send(command);
+      logger.info(`Metadata deleted for ${fullKey}`);
+    } catch (error) {
+      logger.error(`Error deleting metadata for ${fullKey}:`, error);
+      throw error;
     }
   }
 }

@@ -35,6 +35,7 @@ import {
 } from '@mui/icons-material';
 import { useSnackbar } from 'notistack';
 import { tagsApi } from '@/services/api';
+import { useQueryClient } from '@tanstack/react-query';
 
 interface Tag {
   key: string;
@@ -102,6 +103,7 @@ export default function FieldMetadataDialog({
   onUpdate,
 }: FieldMetadataDialogProps) {
   const { enqueueSnackbar } = useSnackbar();
+  const queryClient = useQueryClient();
   const [saving, setSaving] = useState(false);
   
   // Field metadata state
@@ -226,6 +228,10 @@ export default function FieldMetadataDialog({
       };
       
       await tagsApi.updateFieldMetadata(datasetId, field.name, updatedMetadata);
+      
+      // Invalidate the data catalog cache to trigger refresh
+      queryClient.invalidateQueries({ queryKey: ['data-catalog'] });
+      queryClient.invalidateQueries({ queryKey: ['data-catalog-paginated'] });
       
       enqueueSnackbar('Field metadata updated successfully', { variant: 'success' });
       if (onUpdate) {

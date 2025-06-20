@@ -1,8 +1,12 @@
 import { Request, Response, NextFunction } from 'express';
 import { logger } from '../utils/logger';
+import { setCorsHeaders } from '../utils/cors';
 
-export const errorHandler = (err: any, req: Request, res: Response, next: NextFunction) => {
+export const errorHandler = (err: any, req: Request, res: Response, _next: NextFunction) => {
   logger.error('Error:', err);
+
+  // Ensure CORS headers are set even on errors
+  setCorsHeaders(req, res);
 
   // AWS SDK errors
   if (err.name === 'AccessDeniedException') {

@@ -1,4 +1,4 @@
-import { AssetExportService } from './assetExport.service';
+import { AssetExportOrchestrator } from './export/AssetExportOrchestrator';
 import { logger } from '../utils/logger';
 
 export interface LineageRelationship {
@@ -19,10 +19,10 @@ export interface AssetLineage {
 }
 
 export class LineageService {
-  private assetExportService: AssetExportService;
+  private assetExportService: AssetExportOrchestrator;
 
   constructor() {
-    this.assetExportService = new AssetExportService();
+    this.assetExportService = new AssetExportOrchestrator();
   }
 
   async buildLineageMap(): Promise<Map<string, AssetLineage>> {
@@ -39,7 +39,7 @@ export class LineageService {
           assetId: asset.id,
           assetType: asset.type as any,
           assetName: asset.name,
-          relationships: []
+          relationships: [],
         });
       }
 
@@ -52,7 +52,7 @@ export class LineageService {
             dashboard: 'dashboards',
             analysis: 'analyses', 
             dataset: 'datasets',
-            datasource: 'datasources'
+            datasource: 'datasources',
           };
           
           const endpoint = endpointMap[asset.type];
@@ -103,7 +103,7 @@ export class LineageService {
   private async processDashboardLineage(
     dashboard: any, 
     dashboardData: any, 
-    lineageMap: Map<string, AssetLineage>
+    lineageMap: Map<string, AssetLineage>,
   ) {
     const dashboardLineage = lineageMap.get(dashboard.id);
     if (!dashboardLineage) return;
@@ -112,7 +112,7 @@ export class LineageService {
       hasDashboard: !!dashboardData.Dashboard,
       hasVersion: !!dashboardData.Dashboard?.Version,
       hasSourceEntityArn: !!dashboardData.Dashboard?.Version?.SourceEntityArn,
-      hasDefinition: !!dashboardData.Definition
+      hasDefinition: !!dashboardData.Definition,
     });
 
     // Extract source analysis from dashboard version
@@ -129,7 +129,7 @@ export class LineageService {
           targetAssetId: sourceAnalysisId,
           targetAssetType: 'analysis',
           targetAssetName: analysisLineage.assetName,
-          relationshipType: 'uses'
+          relationshipType: 'uses',
         });
 
         // Analysis used by dashboard
@@ -140,7 +140,7 @@ export class LineageService {
           targetAssetId: dashboard.id,
           targetAssetType: 'dashboard',
           targetAssetName: dashboard.name,
-          relationshipType: 'used_by'
+          relationshipType: 'used_by',
         });
         logger.debug(`Added analysis-dashboard relationship: ${sourceAnalysisId} <-> ${dashboard.id}`);
       } else {
@@ -157,7 +157,7 @@ export class LineageService {
   private async processAnalysisLineage(
     analysis: any, 
     analysisData: any, 
-    lineageMap: Map<string, AssetLineage>
+    lineageMap: Map<string, AssetLineage>,
   ) {
     const analysisLineage = lineageMap.get(analysis.id);
     if (!analysisLineage) return;
@@ -169,7 +169,7 @@ export class LineageService {
   private async processDatasetLineage(
     dataset: any, 
     datasetData: any, 
-    lineageMap: Map<string, AssetLineage>
+    lineageMap: Map<string, AssetLineage>,
   ) {
     const datasetLineage = lineageMap.get(dataset.id);
     if (!datasetLineage) return;
@@ -198,7 +198,7 @@ export class LineageService {
               targetAssetId: datasourceId,
               targetAssetType: 'datasource',
               targetAssetName: datasourceLineage.assetName,
-              relationshipType: 'uses'
+              relationshipType: 'uses',
             });
 
             // Datasource used by dataset
@@ -209,7 +209,7 @@ export class LineageService {
               targetAssetId: dataset.id,
               targetAssetType: 'dataset',
               targetAssetName: dataset.name,
-              relationshipType: 'used_by'
+              relationshipType: 'used_by',
             });
           }
         }
@@ -221,14 +221,14 @@ export class LineageService {
     definition: any,
     asset: any,
     assetLineage: AssetLineage,
-    lineageMap: Map<string, AssetLineage>
+    lineageMap: Map<string, AssetLineage>,
   ) {
     // Check both DataSetIdentifierDeclarations (new format) and DataSetIdentifierMap (old format)
     let datasetIds: string[] = [];
     
     if (definition?.DataSetIdentifierDeclarations) {
       datasetIds = definition.DataSetIdentifierDeclarations.map((decl: any) => 
-        decl.DataSetArn?.split('/').pop()
+        decl.DataSetArn?.split('/').pop(),
       ).filter(Boolean);
     } else if (definition?.DataSetIdentifierMap) {
       datasetIds = Object.keys(definition.DataSetIdentifierMap);
@@ -247,7 +247,7 @@ export class LineageService {
           targetAssetId: datasetId,
           targetAssetType: 'dataset',
           targetAssetName: datasetLineage.assetName,
-          relationshipType: 'uses'
+          relationshipType: 'uses',
         });
 
         // Dataset used by asset
@@ -258,7 +258,7 @@ export class LineageService {
           targetAssetId: asset.id,
           targetAssetType: asset.type,
           targetAssetName: asset.name,
-          relationshipType: 'used_by'
+          relationshipType: 'used_by',
         });
       }
     }
@@ -293,7 +293,7 @@ export class LineageService {
                   targetAssetId: rel.targetAssetId,
                   targetAssetType: rel.targetAssetType,
                   targetAssetName: rel.targetAssetName,
-                  relationshipType: 'used_by'
+                  relationshipType: 'used_by',
                 });
               });
           }
@@ -304,7 +304,7 @@ export class LineageService {
           const exists = lineage.relationships.some(existingRel => 
             existingRel.targetAssetId === newRel.targetAssetId && 
             existingRel.targetAssetType === newRel.targetAssetType &&
-            existingRel.relationshipType === newRel.relationshipType
+            existingRel.relationshipType === newRel.relationshipType,
           );
           if (!exists) {
             lineage.relationships.push(newRel);
@@ -338,7 +338,7 @@ export class LineageService {
                   targetAssetId: rel.targetAssetId,
                   targetAssetType: rel.targetAssetType,
                   targetAssetName: rel.targetAssetName,
-                  relationshipType: 'uses'
+                  relationshipType: 'uses',
                 });
               });
           }
@@ -349,7 +349,7 @@ export class LineageService {
           const exists = lineage.relationships.some(existingRel => 
             existingRel.targetAssetId === newRel.targetAssetId && 
             existingRel.targetAssetType === newRel.targetAssetType &&
-            existingRel.relationshipType === newRel.relationshipType
+            existingRel.relationshipType === newRel.relationshipType,
           );
           if (!exists) {
             lineage.relationships.push(newRel);

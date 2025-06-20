@@ -7,10 +7,15 @@ import { dataCatalogRoutes } from './dataCatalog.routes';
 import { lineageRoutes } from './lineage.routes';
 import { foldersRoutes } from './folders.routes';
 import { settingsRoutes } from './settings.routes';
+import { semanticRoutes } from './semantic.routes';
+import { authenticate } from '../middleware/auth';
 
 export const router = Router();
 
-// Mount routes
+// Apply authentication middleware to all API routes
+router.use(authenticate);
+
+// Mount routes (all protected by authentication)
 router.use('/dashboards', dashboardRoutes);
 router.use('/metadata', metadataRoutes);
 router.use('/tags', tagRoutes);
@@ -19,6 +24,7 @@ router.use('/data-catalog', dataCatalogRoutes);
 router.use('/lineage', lineageRoutes);
 router.use('/folders', foldersRoutes);
 router.use('/settings', settingsRoutes);
+router.use('/semantic', semanticRoutes);
 
 // Root endpoint
 router.get('/', (req, res) => {

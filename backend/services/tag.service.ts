@@ -28,7 +28,7 @@ export class TagService {
   async tagResource(
     resourceType: 'dashboard' | 'analysis' | 'dataset' | 'datasource' | 'folder', 
     resourceId: string, 
-    tags: Array<{ key: string; value: string }>
+    tags: Array<{ key: string; value: string }>,
   ): Promise<void> {
     const resourceArn = this.buildResourceArn(resourceType, resourceId);
     logger.info(`Attempting to tag resource: ${resourceArn}`);
@@ -39,7 +39,7 @@ export class TagService {
         Value: tag.value,
       }));
       
-      logger.debug(`Tags to apply:`, quickSightTags);
+      logger.debug('Tags to apply:', quickSightTags);
 
       const command = new TagResourceCommand({
         ResourceArn: resourceArn,
@@ -54,7 +54,7 @@ export class TagService {
         throw new Error(`No permission to tag ${resourceType}. Please ensure your IAM role has quicksight:TagResource permission.`);
       }
       if (error.name === 'InvalidParameterValueException') {
-        throw new Error(`Invalid tag format. Keys and values must follow AWS tagging rules.`);
+        throw new Error('Invalid tag format. Keys and values must follow AWS tagging rules.');
       }
       throw error;
     }
@@ -62,7 +62,7 @@ export class TagService {
 
   async getResourceTags(
     resourceType: 'dashboard' | 'analysis' | 'dataset' | 'datasource' | 'folder',
-    resourceId: string
+    resourceId: string,
   ): Promise<Array<{ key: string; value: string }>> {
     const resourceArn = this.buildResourceArn(resourceType, resourceId);
     
@@ -95,7 +95,7 @@ export class TagService {
   async removeResourceTags(
     resourceType: 'dashboard' | 'analysis' | 'dataset' | 'datasource' | 'folder',
     resourceId: string,
-    tagKeys: string[]
+    tagKeys: string[],
   ): Promise<void> {
     const resourceArn = this.buildResourceArn(resourceType, resourceId);
     
@@ -117,7 +117,7 @@ export class TagService {
   async updateResourceTags(
     resourceType: 'dashboard' | 'analysis' | 'dataset' | 'datasource' | 'folder',
     resourceId: string,
-    tags: Array<{ key: string; value: string }>
+    tags: Array<{ key: string; value: string }>,
   ): Promise<void> {
     // Get current tags
     const currentTags = await this.getResourceTags(resourceType, resourceId);

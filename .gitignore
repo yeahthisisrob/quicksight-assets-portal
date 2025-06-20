@@ -2,6 +2,10 @@
 .env
 .env.local
 .env.*.local
+.env.production
+frontend/.env
+frontend/.env.local
+frontend/.env.production
 
 # CDK
 cdk.out/
@@ -18,10 +22,13 @@ lerna-debug.log*
 .pnpm-debug.log*
 
 # TypeScript
-lib/
-*.js
-*.js.map
-*.d.ts
+backend/lib/
+backend/**/*.js
+backend/**/*.js.map
+backend/**/*.d.ts
+infrastructure/cdk/**/*.js
+infrastructure/cdk/**/*.js.map
+infrastructure/cdk/**/*.d.ts
 !src/lambda/**/*.ts
 
 # IDE

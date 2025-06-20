@@ -20,7 +20,6 @@ import {
   LocalOffer as TagIcon,
   Add as AddIcon,
   Edit as EditIcon,
-  Delete as DeleteIcon,
 } from '@mui/icons-material';
 import { useSnackbar } from 'notistack';
 import { tagsApi } from '@/services/api';
@@ -82,6 +81,7 @@ export default function TagsDialog({
     if (open) {
       fetchTags();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, assetId, resourceType]);
 
   const fetchTags = async () => {

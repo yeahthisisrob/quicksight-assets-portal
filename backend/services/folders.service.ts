@@ -3,8 +3,11 @@ import {
   ListFoldersCommand,
   DescribeFolderCommand,
   DescribeFolderPermissionsCommand,
-  Folder,
+  CreateFolderMembershipCommand,
+  DeleteFolderMembershipCommand,
+  ListFolderMembersCommand,
   FolderSummary,
+  MemberType,
 } from '@aws-sdk/client-quicksight';
 import { MetadataService } from './metadata.service';
 import { TagService } from './tag.service';
@@ -223,7 +226,7 @@ export class FoldersService {
     try {
       const data = await this.metadataService.getMetadata(`folders/${folderId}.json`);
       return data || {};
-    } catch (error) {
+    } catch {
       // If metadata doesn't exist, return empty object
       return {};
     }
@@ -236,6 +239,102 @@ export class FoldersService {
       return metadata;
     } catch (error) {
       logger.error(`Error updating metadata for folder ${folderId}:`, error);
+      throw error;
+    }
+  }
+
+  async addMemberToFolder(folderId: string, memberType: string, memberId: string): Promise<void> {
+    try {
+      logger.info(`Adding ${memberType} ${memberId} to folder ${folderId}`);
+      
+      const command = new CreateFolderMembershipCommand({
+        AwsAccountId: this.awsAccountId,
+        FolderId: folderId,
+        MemberId: memberId,
+        MemberType: memberType.toUpperCase() as MemberType,
+      });
+
+      await this.client.send(command);
+      logger.info(`Successfully added ${memberType} ${memberId} to folder ${folderId}`);
+    } catch (error: any) {
+      logger.error(`Error adding member to folder ${folderId}:`, error);
+      
+      // Provide more specific error messages
+      if (error.name === 'ResourceNotFoundException') {
+        throw new Error('Folder or asset not found');
+      } else if (error.name === 'InvalidParameterValueException') {
+        throw new Error('Invalid member type or ID');
+      } else if (error.name === 'ResourceExistsException') {
+        throw new Error('Asset is already in this folder');
+      } else if (error.name === 'AccessDeniedException') {
+        throw new Error('You don\'t have permission to modify this folder');
+      }
+      
+      throw error;
+    }
+  }
+
+  async getFolderMembers(folderId: string): Promise<any[]> {
+    try {
+      logger.info(`Getting members for folder ${folderId}`);
+      
+      const members: any[] = [];
+      let nextToken: string | undefined;
+
+      do {
+        const command = new ListFolderMembersCommand({
+          AwsAccountId: this.awsAccountId,
+          FolderId: folderId,
+          NextToken: nextToken,
+          MaxResults: 100,
+        });
+
+        const response = await this.client.send(command);
+        
+        if (response.FolderMemberList) {
+          members.push(...response.FolderMemberList);
+        }
+
+        nextToken = response.NextToken;
+      } while (nextToken);
+
+      logger.info(`Found ${members.length} members in folder ${folderId}`);
+      return members;
+    } catch (error: any) {
+      logger.error(`Error getting folder members for ${folderId}:`, error);
+      
+      if (error.name === 'ResourceNotFoundException') {
+        throw new Error('Folder not found');
+      } else if (error.name === 'AccessDeniedException') {
+        throw new Error('You don\'t have permission to view this folder');
+      }
+      
+      throw error;
+    }
+  }
+
+  async removeMemberFromFolder(folderId: string, memberId: string, memberType: string): Promise<void> {
+    try {
+      logger.info(`Removing ${memberType} ${memberId} from folder ${folderId}`);
+      
+      const command = new DeleteFolderMembershipCommand({
+        AwsAccountId: this.awsAccountId,
+        FolderId: folderId,
+        MemberId: memberId,
+        MemberType: memberType.toUpperCase() as MemberType,
+      });
+
+      await this.client.send(command);
+      logger.info(`Successfully removed ${memberType} ${memberId} from folder ${folderId}`);
+    } catch (error: any) {
+      logger.error(`Error removing member from folder ${folderId}:`, error);
+      
+      if (error.name === 'ResourceNotFoundException') {
+        throw new Error('Folder, asset, or membership not found');
+      } else if (error.name === 'AccessDeniedException') {
+        throw new Error('You don\'t have permission to modify this folder');
+      }
+      
       throw error;
     }
   }

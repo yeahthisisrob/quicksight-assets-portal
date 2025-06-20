@@ -13,7 +13,6 @@ import {
   ListItemText,
   ListItemButton,
   IconButton,
-  Divider,
   Accordion,
   AccordionSummary,
   AccordionDetails,
@@ -80,9 +79,48 @@ export default function RelatedAssetsDialog({
 }: RelatedAssetsDialogProps) {
   const navigate = useNavigate();
 
+  // Determine relationship direction based on asset type hierarchy
+  const determineRelationship = (currentAssetType: string, relatedAssetType: string): 'uses' | 'used_by' => {
+    const currentType = currentAssetType.toLowerCase();
+    const relatedType = relatedAssetType.toLowerCase();
+    
+    // Datasource relationships
+    if (currentType === 'datasource') {
+      // Datasources are used by datasets, analyses, and dashboards
+      return 'used_by';
+    }
+    
+    // Dataset relationships
+    if (currentType === 'dataset') {
+      if (relatedType === 'datasource') {
+        return 'uses'; // Datasets use datasources
+      } else {
+        return 'used_by'; // Datasets are used by analyses and dashboards
+      }
+    }
+    
+    // Analysis relationships
+    if (currentType === 'analysis') {
+      if (relatedType === 'dashboard') {
+        return 'used_by'; // Analyses can be published to dashboards
+      } else {
+        return 'uses'; // Analyses use datasets and datasources
+      }
+    }
+    
+    // Dashboard relationships
+    if (currentType === 'dashboard') {
+      // Dashboards use everything else
+      return 'uses';
+    }
+    
+    // Default fallback
+    return 'uses';
+  };
+
   // Group by relationship type first (Uses vs Used By)
   const groupedByRelationship = relatedAssets.reduce((acc, asset) => {
-    const relationshipType = asset.relationship?.toLowerCase().includes('used by') ? 'used_by' : 'uses';
+    const relationshipType = determineRelationship(assetType, asset.type);
     if (!acc[relationshipType]) acc[relationshipType] = [];
     acc[relationshipType].push(asset);
     return acc;

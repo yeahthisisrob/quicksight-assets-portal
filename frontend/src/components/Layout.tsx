@@ -31,6 +31,7 @@ import {
   CloudDownload as ExportIcon,
   TableChart as DataCatalogIcon,
   Folder as FolderIcon,
+  Search as SearchIcon,
 } from '@mui/icons-material';
 import axios from 'axios';
 import { config } from '@/config';
@@ -44,6 +45,7 @@ const menuItems = [
   { text: 'Datasources', icon: <DatasourceIcon />, path: '/datasources' },
   { text: 'Folders', icon: <FolderIcon />, path: '/folders' },
   { text: 'Data Catalog', icon: <DataCatalogIcon />, path: '/data-catalog' },
+  { text: 'Metadata Search', icon: <SearchIcon />, path: '/metadata-search' },
   { text: 'Asset Export', icon: <ExportIcon />, path: '/assets' },
 ];
 

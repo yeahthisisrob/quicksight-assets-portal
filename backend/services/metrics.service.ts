@@ -28,15 +28,15 @@ export class MetricsService {
         event.EventName === 'GenerateEmbedUrlForRegisteredUser' ||
         event.EventName === 'GenerateEmbedUrlForAnonymousUser' ||
         event.EventName === 'GetDashboard' ||
-        event.EventName === 'DescribeDashboard'
+        event.EventName === 'DescribeDashboard',
       );
 
       const viewCountLast30Days = viewEvents.length;
       const viewCountLast7Days = viewEvents.filter(event => 
-        event.EventTime && isAfter(event.EventTime, sevenDaysAgo)
+        event.EventTime && isAfter(event.EventTime, sevenDaysAgo),
       ).length;
       const viewCountToday = viewEvents.filter(event => 
-        event.EventTime && isAfter(event.EventTime, today)
+        event.EventTime && isAfter(event.EventTime, today),
       ).length;
 
       const lastViewed = viewEvents.length > 0 && viewEvents[0].EventTime 
@@ -75,7 +75,7 @@ export class MetricsService {
   private async fetchCloudTrailEvents(
     dashboardArn: string,
     startTime: Date,
-    endTime: Date
+    endTime: Date,
   ): Promise<Event[]> {
     const events: Event[] = [];
     let nextToken: string | undefined;

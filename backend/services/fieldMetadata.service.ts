@@ -96,7 +96,7 @@ export class FieldMetadataService {
   async getFieldMetadata(
     sourceTypeOrDatasetId: string | 'dataset' | 'analysis' | 'dashboard',
     sourceIdOrFieldName: string,
-    fieldNameOrUndefined?: string
+    fieldNameOrUndefined?: string,
   ): Promise<FieldMetadata | null> {
     try {
       let sourceType: 'dataset' | 'analysis' | 'dashboard';
@@ -119,7 +119,7 @@ export class FieldMetadataService {
       const key = this.getMetadataKey(sourceType, sourceId, fieldName);
       const metadata = await this.metadataService.getMetadata(key);
       return metadata as FieldMetadata;
-    } catch (error) {
+    } catch {
       // Return default metadata if none exists
       let sourceType: 'dataset' | 'analysis' | 'dashboard';
       let sourceId: string;
@@ -170,7 +170,7 @@ export class FieldMetadataService {
     sourceTypeOrDatasetId: string | 'dataset' | 'analysis' | 'dashboard',
     sourceIdOrFieldName: string,
     fieldNameOrUpdates: string | Partial<FieldMetadata>,
-    updatesOrUndefined?: Partial<FieldMetadata>
+    updatesOrUndefined?: Partial<FieldMetadata>,
   ): Promise<FieldMetadata> {
     try {
       let sourceType: 'dataset' | 'analysis' | 'dashboard';
@@ -227,7 +227,7 @@ export class FieldMetadataService {
       logger.info(`Updated metadata for field ${fieldName} in ${sourceType} ${sourceId}`);
       return updated;
     } catch (error) {
-      logger.error(`Error updating field metadata:`, error);
+      logger.error('Error updating field metadata:', error);
       throw error;
     }
   }
@@ -247,7 +247,7 @@ export class FieldMetadataService {
     sourceTypeOrDatasetId: string | 'dataset' | 'analysis' | 'dashboard',
     sourceIdOrFieldName: string,
     fieldNameOrTags: string | Array<{ key: string; value: string }>,
-    tagsOrUndefined?: Array<{ key: string; value: string }>
+    tagsOrUndefined?: Array<{ key: string; value: string }>,
   ): Promise<void> {
     let sourceType: 'dataset' | 'analysis' | 'dashboard';
     let sourceId: string;
@@ -297,7 +297,7 @@ export class FieldMetadataService {
     sourceTypeOrDatasetId: string | 'dataset' | 'analysis' | 'dashboard',
     sourceIdOrFieldName: string,
     fieldNameOrTagKeys: string | string[],
-    tagKeysOrUndefined?: string[]
+    tagKeysOrUndefined?: string[],
   ): Promise<void> {
     let sourceType: 'dataset' | 'analysis' | 'dashboard';
     let sourceId: string;
@@ -337,7 +337,7 @@ export class FieldMetadataService {
   async getFieldTags(
     sourceTypeOrDatasetId: string | 'dataset' | 'analysis' | 'dashboard',
     sourceIdOrFieldName: string,
-    fieldNameOrUndefined?: string
+    fieldNameOrUndefined?: string,
   ): Promise<Array<{ key: string; value: string }>> {
     let sourceType: 'dataset' | 'analysis' | 'dashboard';
     let sourceId: string;
@@ -366,7 +366,7 @@ export class FieldMetadataService {
   ): Promise<FieldMetadata[]>;
   async getAllFieldsMetadata(
     sourceTypeOrDatasetId: string | 'dataset' | 'analysis' | 'dashboard',
-    sourceIdOrUndefined?: string
+    sourceIdOrUndefined?: string,
   ): Promise<FieldMetadata[]> {
     try {
       let sourceType: 'dataset' | 'analysis' | 'dashboard';
@@ -389,7 +389,7 @@ export class FieldMetadataService {
         try {
           const metadata = await this.metadataService.getMetadata(obj.key);
           return metadata as FieldMetadata;
-        } catch (error) {
+        } catch {
           return null;
         }
       });
@@ -458,10 +458,10 @@ export class FieldMetadataService {
 
   // Batch operations for performance
   async batchUpdateFieldsMetadata(
-    updates: Array<{ datasetId: string; fieldName: string; metadata: Partial<FieldMetadata> }>
+    updates: Array<{ datasetId: string; fieldName: string; metadata: Partial<FieldMetadata> }>,
   ): Promise<void> {
     const updatePromises = updates.map(({ datasetId, fieldName, metadata }) =>
-      this.updateFieldMetadata(datasetId, fieldName, metadata)
+      this.updateFieldMetadata(datasetId, fieldName, metadata),
     );
     
     await Promise.all(updatePromises);

@@ -51,7 +51,43 @@ router.get('/:resourceType/:resourceId', asyncHandler(async (req, res) => {
   
   const tags = await tagService.getResourceTags(
     resourceType as 'dashboard' | 'analysis' | 'dataset' | 'datasource' | 'folder',
-    resourceId
+    resourceId,
+  );
+  
+  res.json({
+    success: true,
+    data: tags,
+  });
+}));
+
+// POST /api/tags/:resourceType/:resourceId/refresh - Refresh cached tags for a specific asset
+router.post('/:resourceType/:resourceId/refresh', asyncHandler(async (req, res) => {
+  const { resourceType, resourceId } = req.params;
+  
+  if (!['dashboard', 'analysis', 'dataset', 'datasource'].includes(resourceType)) {
+    return res.status(400).json({
+      success: false,
+      error: 'Invalid resource type',
+    });
+  }
+  
+  logger.info(`Refreshing cached tags for ${resourceType} ${resourceId}`);
+  
+  // Import AssetExportOrchestrator here to avoid circular dependency
+  const { AssetExportOrchestrator } = await import('../services/export/AssetExportOrchestrator');
+  const assetExportService = new AssetExportOrchestrator();
+  
+  // Map singular to plural for the export service
+  const assetTypePlural = {
+    'dashboard': 'dashboards',
+    'dataset': 'datasets', 
+    'analysis': 'analyses',
+    'datasource': 'datasources',
+  }[resourceType] as 'dashboards' | 'datasets' | 'analyses' | 'datasources';
+  
+  const tags = await assetExportService.refreshAssetTags(
+    assetTypePlural,
+    resourceId,
   );
   
   res.json({
@@ -115,7 +151,7 @@ router.post('/:resourceType/:resourceId', asyncHandler(async (req, res) => {
   // Get current tags
   const currentTags = await tagService.getResourceTags(
     resourceType as 'dashboard' | 'analysis' | 'dataset' | 'datasource' | 'folder',
-    resourceId
+    resourceId,
   );
   
   // Find tags to remove (in current but not in new)
@@ -128,7 +164,7 @@ router.post('/:resourceType/:resourceId', asyncHandler(async (req, res) => {
     await tagService.removeResourceTags(
       resourceType as 'dashboard' | 'analysis' | 'dataset' | 'datasource' | 'folder',
       resourceId,
-      tagsToRemove
+      tagsToRemove,
     );
   }
   
@@ -137,8 +173,32 @@ router.post('/:resourceType/:resourceId', asyncHandler(async (req, res) => {
     await tagService.tagResource(
       resourceType as 'dashboard' | 'analysis' | 'dataset' | 'datasource' | 'folder',
       resourceId,
-      tags
+      tags,
     );
+  }
+  
+  // Update the cached metadata with new tags (only for supported asset types)
+  if (['dashboard', 'analysis', 'dataset', 'datasource'].includes(resourceType)) {
+    try {
+      const { AssetExportOrchestrator } = await import('../services/export/AssetExportOrchestrator');
+      const assetExportService = new AssetExportOrchestrator();
+      // Map singular to plural for the export service
+      const assetTypePlural = {
+        'dashboard': 'dashboards',
+        'dataset': 'datasets', 
+        'analysis': 'analyses',
+        'datasource': 'datasources',
+      }[resourceType] as 'dashboards' | 'datasets' | 'analyses' | 'datasources';
+      
+      await assetExportService.refreshAssetTags(
+        assetTypePlural,
+        resourceId,
+      );
+      logger.info(`Updated cached tags for ${resourceType} ${resourceId}`);
+    } catch (error) {
+      logger.warn(`Failed to update cached tags for ${resourceType} ${resourceId}:`, error);
+      // Don't fail the request if cache update fails
+    }
   }
   
   res.json({
@@ -171,7 +231,7 @@ router.delete('/:resourceType/:resourceId', asyncHandler(async (req, res) => {
   await tagService.removeResourceTags(
     resourceType as 'dashboard' | 'analysis' | 'dataset' | 'datasource' | 'folder',
     resourceId,
-    tagKeys
+    tagKeys,
   );
   
   res.json({
@@ -214,7 +274,7 @@ router.get('/field/:sourceType/:sourceId/all', asyncHandler(async (req, res) => 
   
   const metadata = await fieldMetadataService.getAllFieldsMetadata(
     sourceType as 'dataset' | 'analysis' | 'dashboard',
-    sourceId
+    sourceId,
   );
   
   res.json({
@@ -254,7 +314,7 @@ router.get('/field/:sourceType/:sourceId/:fieldName', asyncHandler(async (req, r
   const metadata = await fieldMetadataService.getFieldMetadata(
     sourceType as 'dataset' | 'analysis' | 'dashboard',
     sourceId,
-    fieldName
+    fieldName,
   );
   
   res.json({
@@ -273,7 +333,7 @@ router.put('/field/:datasetId/:fieldName', asyncHandler(async (req, res) => {
   const metadata = await fieldMetadataService.updateFieldMetadata(
     datasetId,
     fieldName,
-    updates
+    updates,
   );
   
   res.json({
@@ -301,7 +361,7 @@ router.put('/field/:sourceType/:sourceId/:fieldName', asyncHandler(async (req, r
     sourceType as 'dataset' | 'analysis' | 'dashboard',
     sourceId,
     fieldName,
-    updates
+    updates,
   );
   
   res.json({
@@ -358,7 +418,7 @@ router.post('/field/:sourceType/:sourceId/:fieldName/tags', asyncHandler(async (
     sourceType as 'dataset' | 'analysis' | 'dashboard',
     sourceId,
     fieldName,
-    tags
+    tags,
   );
   
   res.json({
@@ -415,7 +475,7 @@ router.delete('/field/:sourceType/:sourceId/:fieldName/tags', asyncHandler(async
     sourceType as 'dataset' | 'analysis' | 'dashboard',
     sourceId,
     fieldName,
-    tagKeys
+    tagKeys,
   );
   
   res.json({
@@ -448,7 +508,7 @@ router.get('/test/:resourceType/:resourceId', asyncHandler(async (req, res) => {
     // Test getting tags
     const tags = await tagService.getResourceTags(
       resourceType as 'dashboard' | 'analysis' | 'dataset' | 'datasource',
-      resourceId
+      resourceId,
     );
     
     // Test adding a tag
@@ -456,13 +516,13 @@ router.get('/test/:resourceType/:resourceId', asyncHandler(async (req, res) => {
     await tagService.tagResource(
       resourceType as 'dashboard' | 'analysis' | 'dataset' | 'datasource',
       resourceId,
-      [testTag]
+      [testTag],
     );
     
     // Get tags again
     const updatedTags = await tagService.getResourceTags(
       resourceType as 'dashboard' | 'analysis' | 'dataset' | 'datasource',
-      resourceId
+      resourceId,
     );
     
     res.json({
@@ -472,14 +532,14 @@ router.get('/test/:resourceType/:resourceId', asyncHandler(async (req, res) => {
         addedTag: testTag,
         updatedTags: updatedTags,
         accountId: process.env.AWS_ACCOUNT_ID,
-        region: process.env.AWS_DEFAULT_REGION || 'us-east-1'
-      }
+        region: process.env.AWS_DEFAULT_REGION || 'us-east-1',
+      },
     });
   } catch (error: any) {
     res.status(500).json({
       success: false,
       error: error.message,
-      details: error
+      details: error,
     });
   }
 }));

@@ -22,14 +22,12 @@ import {
 } from '@mui/x-data-grid';
 import {
   ArrowBack as BackIcon,
-  LocalOffer as TagIcon,
   Info as InfoIcon,
   TableChart as FieldIcon,
   Functions as CalcFieldIcon,
 } from '@mui/icons-material';
 import { format } from 'date-fns';
 import { assetsApi, tagsApi } from '@/services/api';
-import { useSnackbar } from 'notistack';
 import TagsCell from '@/components/tags/TagsCell';
 import FieldMetadataDialog from '@/components/fieldMetadata/FieldMetadataDialog';
 
@@ -58,7 +56,6 @@ function TabPanel(props: TabPanelProps) {
 export default function DatasetDetailPage() {
   const { datasetId } = useParams<{ datasetId: string }>();
   const navigate = useNavigate();
-  const { enqueueSnackbar } = useSnackbar();
   const [tabValue, setTabValue] = useState(0);
   const [selectedField, setSelectedField] = useState<any>(null);
   const [fieldMetadataDialog, setFieldMetadataDialog] = useState(false);
@@ -87,22 +84,17 @@ export default function DatasetDetailPage() {
 
   // Process field metadata into a map
   useEffect(() => {
-    if (allFieldMetadata) {
+    if (allFieldMetadata && Array.isArray(allFieldMetadata)) {
       const metadataMap: Record<string, any> = {};
-      // Handle both array and object with data property
-      const metadataArray = Array.isArray(allFieldMetadata) ? allFieldMetadata : allFieldMetadata.data || [];
-      
-      if (Array.isArray(metadataArray)) {
-        metadataArray.forEach((metadata: any) => {
-          metadataMap[metadata.fieldName] = metadata;
-        });
-      }
+      allFieldMetadata.forEach((metadata: any) => {
+        metadataMap[metadata.fieldName] = metadata;
+      });
       
       setFieldMetadata(metadataMap);
     }
   }, [allFieldMetadata]);
 
-  const handleTabChange = (event: React.SyntheticEvent, newValue: number) => {
+  const handleTabChange = (_event: React.SyntheticEvent, newValue: number) => {
     setTabValue(newValue);
   };
 

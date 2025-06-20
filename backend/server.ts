@@ -1,10 +1,13 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import cookieParser from 'cookie-parser';
 import { router } from './routes';
+import authRoutes from './routes/auth.routes';
 import { errorHandler } from './middleware/errorHandler';
 import { logger } from './utils/logger';
 import { StartupService } from './services/startup.service';
+import { requestContext } from './middleware/requestContext';
 
 // Load environment variables
 import path from 'path';
@@ -13,36 +16,62 @@ import path from 'path';
 const envPath = __dirname.includes('dist') 
   ? path.resolve(__dirname, '../../.env')
   : path.resolve(__dirname, '../.env');
-console.log('Loading .env from:', envPath);
+// Use logger instead of console.log
 const result = dotenv.config({ path: envPath });
 if (result.error) {
-  console.error('Error loading .env file:', result.error);
+  logger.error('Error loading .env file', { error: result.error });
 } else {
-  console.log('Environment variables loaded successfully');
-  console.log('BUCKET_NAME:', process.env.BUCKET_NAME);
-  console.log('AWS_ACCOUNT_ID:', process.env.AWS_ACCOUNT_ID);
+  logger.debug('Environment variables loaded', {
+    bucketName: process.env.BUCKET_NAME,
+    accountId: process.env.AWS_ACCOUNT_ID,
+  });
 }
 
 const app = express();
 const PORT = process.env.PORT || 4000;
 
+// CORS configuration - same as index.ts
+const getCorsOrigin = () => {
+  // In production, use the specific frontend URL
+  if (process.env.NODE_ENV === 'production' && process.env.FRONTEND_URL) {
+    return process.env.FRONTEND_URL;
+  }
+  
+  // In development, allow multiple origins
+  if (process.env.NODE_ENV === 'development') {
+    return (origin: string | undefined, callback: Function) => {
+      const allowedOrigins = [
+        'http://localhost:3000',
+        'http://localhost:5173',
+        'http://localhost:4000',
+      ];
+      
+      if (!origin) return callback(null, true);
+      
+      if (allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error('Not allowed by CORS'));
+      }
+    };
+  }
+  
+  return process.env.FRONTEND_URL || 'http://localhost:5173';
+};
+
 // Middleware
 app.use(cors({
-  origin: 'http://localhost:3000',
+  origin: getCorsOrigin(),
   credentials: true,
+  allowedHeaders: ['Content-Type', 'X-Amz-Date', 'Authorization', 'X-Api-Key', 'X-Requested-With', 'X-Request-Id'],
 }));
 app.use(express.json());
-
-// Request logging
-app.use((req: express.Request, _res: express.Response, next: express.NextFunction) => {
-  logger.info(`${req.method} ${req.path}`, {
-    query: req.query,
-    body: req.body,
-  });
-  next();
-});
+app.use(express.urlencoded({ extended: true }));
+app.use(cookieParser());
+app.use(requestContext);
 
 // Routes
+app.use('/auth', authRoutes);
 app.use('/api', router);
 
 // Health check
@@ -62,12 +91,31 @@ const startServer = async () => {
 
     // Start server
     app.listen(PORT, () => {
-      logger.info(`🚀 Backend server running at http://localhost:${PORT}`);
-      logger.info(`📍 API endpoints at http://localhost:${PORT}/api`);
-      logger.info(`🔑 Using AWS profile: ${process.env.AWS_PROFILE || 'default'}`);
-      logger.info(`📍 AWS Account: ${process.env.AWS_ACCOUNT_ID || 'Not set'}`);
-      logger.info(`📍 AWS Region: ${process.env.AWS_REGION || 'Not set'}`);
-      logger.info(`🪣 S3 Bucket: ${process.env.BUCKET_NAME || 'quicksight-metadata-bucket (default)'}`);
+      logger.info('Backend server started', {
+        port: PORT,
+        environment: process.env.NODE_ENV,
+        awsProfile: process.env.AWS_PROFILE || 'default',
+        awsAccount: process.env.AWS_ACCOUNT_ID,
+        awsRegion: process.env.AWS_REGION,
+        s3Bucket: process.env.BUCKET_NAME || 'quicksight-metadata-bucket',
+        frontendUrl: process.env.FRONTEND_URL,
+      });
+      
+      // Log available auth methods
+      const hasOktaSaml = !!(process.env.OKTA_SAML_APP_URL && process.env.OKTA_SAML_ROLE_ARN);
+      const hasCognito = !!(process.env.COGNITO_USER_POOL_ID && process.env.COGNITO_CLIENT_ID);
+      const isDevMode = process.env.NODE_ENV === 'development';
+      
+      const authMethods = [];
+      if (hasOktaSaml) authMethods.push('okta-saml');
+      if (hasCognito) authMethods.push('cognito');
+      if (isDevMode) authMethods.push('local-aws-dev');
+      
+      if (authMethods.length > 0) {
+        logger.info('Auth methods configured', { methods: authMethods });
+      } else {
+        logger.warn('No auth methods configured');
+      }
     });
   } catch (error) {
     logger.error('Failed to start server:', error);

@@ -1,11 +1,4 @@
 /**
- * Escapes special regex characters in a string.
- * @param str The string to escape.
- * @returns The escaped string.
- */
-const escapeRegex = (str: string) => str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-/**
  * Extracts tokens from an expression, excluding string literals.
  * @param expression The expression string.
  * @returns An array of tokens (words) outside of string literals.
