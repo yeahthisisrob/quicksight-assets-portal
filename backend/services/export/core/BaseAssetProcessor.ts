@@ -3,6 +3,7 @@ import { MetadataService } from '../../metadata.service';
 import { PermissionsService } from '../../permissions.service';
 import { TagService } from '../../tag.service';
 import { AssetParserService } from '../../assetParser.service';
+import { indexingService } from '../../indexing.service';
 import { logger } from '../../../utils/logger';
 import { withRetry } from '../../../utils/awsRetry';
 import pLimit from 'p-limit';
@@ -26,9 +27,9 @@ export abstract class BaseAssetProcessor implements IAssetProcessor {
   protected concurrencyLimit: ReturnType<typeof pLimit>;
 
   protected readonly RETRY_OPTIONS = {
-    maxRetries: 3,
-    baseDelay: 1000,
-    maxDelay: 10000,
+    maxRetries: 5, // Increased retries
+    baseDelay: 500, // Start with shorter delay
+    maxDelay: 5000, // Cap at 5 seconds
   };
 
   constructor(
@@ -112,6 +113,20 @@ export abstract class BaseAssetProcessor implements IAssetProcessor {
           await this.processAsset(summary, context);
           stats.updated++;
           logger.debug(`Successfully processed ${this.assetType} ${assetId}`);
+          
+          // Update the index immediately after successful processing
+          // The asset data has been saved to S3, so we can update the index
+          try {
+            await indexingService.updateAssetInIndex(
+              this.assetType,
+              assetId,
+              await this.metadataService.getMetadata(`assets/${this.assetType}/${assetId}.json`),
+            );
+            logger.debug(`Updated index for ${this.assetType} ${assetId}`);
+          } catch (indexError) {
+            // Don't fail the whole process if index update fails
+            logger.warn(`Failed to update index for ${this.assetType} ${assetId}:`, indexError);
+          }
         } catch (error) {
           const assetId = this.getAssetId(summary);
           logger.error(`Error processing ${this.assetType} ${assetId}:`, error);
@@ -124,8 +139,8 @@ export abstract class BaseAssetProcessor implements IAssetProcessor {
           });
         }
       },
-      context.batchSize || 25,
-      context.delayMs || 100,
+      context.batchSize || 100, // Default to larger batches
+      context.delayMs || 50, // Default to shorter delays
     );
 
     // Mark this asset type as completed with full stats
@@ -200,26 +215,46 @@ export abstract class BaseAssetProcessor implements IAssetProcessor {
   protected async processWithRateLimit<T>(
     items: T[],
     processor: (item: T, index: number) => Promise<void>,
-    batchSize: number = 25,
-    delayMs: number = 100,
+    batchSize: number = 100, // Increased batch size
+    delayMs: number = 50, // Reduced delay
   ): Promise<void> {
+    // Process items with higher concurrency - AWS allows 200 req/sec for Describe* APIs
+    const maxConcurrent = 20; // Increased concurrency within batches
+    
     for (let i = 0; i < items.length; i += batchSize) {
       const batch = items.slice(i, i + batchSize);
       
-      await Promise.all(
-        batch.map((item, batchIndex) => 
-          this.concurrencyLimit(async () => {
-            const delay = Math.floor((batchIndex % 3) * delayMs);
-            if (delay > 0) {
-              await new Promise(resolve => setTimeout(resolve, delay));
-            }
-            await processor(item, i + batchIndex);
-          }),
-        ),
-      );
+      // Process batch items with limited concurrency
+      for (let j = 0; j < batch.length; j += maxConcurrent) {
+        const concurrentItems = batch.slice(j, j + maxConcurrent);
+        
+        await Promise.all(
+          concurrentItems.map((item, concurrentIndex) => 
+            this.concurrencyLimit(async () => {
+              const itemIndex = i + j + concurrentIndex;
+              // Minimal stagger to avoid thundering herd
+              const delay = concurrentIndex * 10; // 10ms stagger
+              if (delay > 0) {
+                await new Promise(resolve => setTimeout(resolve, delay));
+              }
+              await processor(item, itemIndex);
+            }),
+          ),
+        );
+        
+        // Minimal delay between concurrent groups
+        if (j + maxConcurrent < batch.length) {
+          await new Promise(resolve => setTimeout(resolve, 20)); // 20ms between groups
+        }
+      }
       
       const processed = Math.min(i + batchSize, items.length);
       logger.debug(`Processed batch: ${processed}/${items.length} ${this.assetType}s`);
+      
+      // Minimal delay between batches to respect rate limits
+      if (i + batchSize < items.length) {
+        await new Promise(resolve => setTimeout(resolve, 100)); // 100ms between batches
+      }
     }
   }
 
@@ -238,6 +273,37 @@ export abstract class BaseAssetProcessor implements IAssetProcessor {
     return `assets/${this.getServicePath()}/${assetId}.json`;
   }
 
+  protected async shouldUpdate(cacheKey: string, summary: AssetSummary, context: ProcessingContext): Promise<boolean> {
+    if (context.forceRefresh) {
+      return true;
+    }
+
+    try {
+      const existingData = await this.metadataService.getMetadata(cacheKey);
+      const existingMetadata = existingData?.['@metadata'];
+      
+      if (!existingMetadata?.exportTime) {
+        return true;
+      }
+
+      // Check if cache is stale (older than 1 hour)
+      const cacheAge = Date.now() - new Date(existingMetadata.exportTime).getTime();
+      if (cacheAge > 60 * 60 * 1000) {
+        return true;
+      }
+
+      // Check if asset was updated after last export
+      if (summary.LastUpdatedTime && existingMetadata.lastModifiedTime) {
+        return new Date(summary.LastUpdatedTime) > new Date(existingMetadata.lastModifiedTime);
+      }
+
+      return false;
+    } catch {
+      // If we can't read the cache, we need to update
+      return true;
+    }
+  }
+
   protected async fetchPermissionsAndTags(assetId: string) {
     return Promise.all([
       this.getPermissions(assetId).catch(err => {
@@ -253,4 +319,18 @@ export abstract class BaseAssetProcessor implements IAssetProcessor {
 
   protected abstract getPermissions(assetId: string): Promise<any[]>;
   protected abstract getTags(assetId: string): Promise<any[]>;
+
+  protected async executeAllPromises<T extends Record<string, Promise<any>>>(
+    promises: T
+  ): Promise<{ [K in keyof T]: Awaited<T[K]> }> {
+    const keys = Object.keys(promises) as (keyof T)[];
+    const values = await Promise.all(keys.map(key => promises[key]));
+    
+    const result = {} as { [K in keyof T]: Awaited<T[K]> };
+    keys.forEach((key, index) => {
+      result[key] = values[index];
+    });
+    
+    return result;
+  }
 }

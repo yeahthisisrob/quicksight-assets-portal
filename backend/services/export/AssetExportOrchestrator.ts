@@ -9,6 +9,7 @@ import { MetadataService } from '../metadata.service';
 import { PermissionsService } from '../permissions.service';
 import { TagService } from '../tag.service';
 import { AssetParserService } from '../assetParser.service';
+import { indexingService } from '../indexing.service';
 import { logger } from '../../utils/logger';
 import { getAwsConfig } from '../../utils/awsConfig';
 import { withRetry } from '../../utils/awsRetry';
@@ -31,9 +32,9 @@ export class AssetExportOrchestrator implements IProgressTracker {
   private isCheckingCompletion = false;
 
   private readonly RETRY_OPTIONS = {
-    maxRetries: 3,
-    baseDelay: 1000,
-    maxDelay: 10000,
+    maxRetries: 5, // Increased retries
+    baseDelay: 500, // Start with shorter delay
+    maxDelay: 5000, // Cap at 5 seconds
   };
 
   constructor() {
@@ -106,7 +107,7 @@ export class AssetExportOrchestrator implements IProgressTracker {
       assetParserService,
       this.awsAccountId,
       this,
-      3, // max concurrency
+      50, // max concurrency - AWS allows up to 200 req/sec for Describe* APIs
     ));
 
     this.processors.set('datasets', new DatasetProcessor(
@@ -117,7 +118,7 @@ export class AssetExportOrchestrator implements IProgressTracker {
       assetParserService,
       this.awsAccountId,
       this,
-      3, // max concurrency
+      50, // max concurrency - AWS allows up to 200 req/sec for Describe* APIs
     ));
 
     this.processors.set('analyses', new AnalysisProcessor(
@@ -128,7 +129,7 @@ export class AssetExportOrchestrator implements IProgressTracker {
       assetParserService,
       this.awsAccountId,
       this,
-      3, // max concurrency
+      100, // Increased concurrency for analyses - can handle 1200+ items
     ));
 
     this.processors.set('datasources', new DatasourceProcessor(
@@ -139,7 +140,7 @@ export class AssetExportOrchestrator implements IProgressTracker {
       assetParserService,
       this.awsAccountId,
       this,
-      3, // max concurrency
+      50, // max concurrency - AWS allows up to 200 req/sec for Describe* APIs
     ));
   }
 
@@ -159,24 +160,32 @@ export class AssetExportOrchestrator implements IProgressTracker {
     try {
       // Only start a new session if we don't have one already
       if (!this.currentSession || this.currentSession.status !== 'running') {
-        await this.startExportSession(); // Full export - all types
+        // Start session with empty progress - we'll add each type as we process it
+        await this.startExportSession([]); // Empty array means don't initialize any progress
       }
 
-      // Export dashboards
-      logger.info('Starting dashboard export...');
-      result.dashboards = await this.exportAssetType('dashboards', context);
-
-      // Export datasets
-      logger.info('Starting dataset export...');
-      result.datasets = await this.exportAssetType('datasets', context);
-
-      // Export analyses
-      logger.info('Starting analysis export...');
-      result.analyses = await this.exportAssetType('analyses', context);
-
-      // Export datasources
-      logger.info('Starting datasource export...');
-      result.datasources = await this.exportAssetType('datasources', context);
+      // Export each asset type sequentially
+      const assetTypes: AssetType[] = ['dashboards', 'datasets', 'analyses', 'datasources'];
+      
+      for (const assetType of assetTypes) {
+        // Initialize progress for this asset type just before processing
+        if (!this.currentSession!.progress[assetType]) {
+          this.currentSession!.progress[assetType] = { 
+            status: 'idle', 
+            current: 0, 
+            total: 0, 
+            message: 'Waiting to start...', 
+            errors: [], 
+          };
+          await this.saveSessionState();
+        }
+        
+        logger.info(`Starting ${assetType} export...`);
+        result[assetType] = await this.exportAssetType(assetType, context);
+        
+        // Small delay between asset types to ensure clean transition
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
 
       result.duration = Date.now() - startTime;
       
@@ -231,7 +240,7 @@ export class AssetExportOrchestrator implements IProgressTracker {
       try {
         const v2Lister = new V2DataSourceLister(
           process.env.AWS_ACCOUNT_ID || this.awsAccountId, 
-          process.env.AWS_REGION || 'us-east-1'
+          process.env.AWS_REGION || 'us-east-1',
         );
         const dataSources = await v2Lister.listAllDataSources();
         
@@ -513,23 +522,21 @@ export class AssetExportOrchestrator implements IProgressTracker {
 
     const sessionId = `export-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     
-    // If specific asset types are provided, only initialize those
-    // Otherwise, initialize all (for full export)
-    const typesToInitialize = assetTypes || ['dashboards', 'datasets', 'analyses', 'datasources'];
     const progress: Record<string, ExportProgress> = {};
     
-    if (assetTypes) {
+    if (assetTypes && assetTypes.length > 0) {
       // Individual export - only initialize requested types
       for (const type of assetTypes) {
         progress[type] = { status: 'idle', current: 0, total: 0, message: 'Not started', errors: [] };
       }
-    } else {
-      // Full export - initialize all types
+    } else if (assetTypes === undefined) {
+      // No assetTypes parameter provided - initialize all types (backward compatibility)
       progress.dashboards = { status: 'idle', current: 0, total: 0, message: 'Not started', errors: [] };
       progress.datasets = { status: 'idle', current: 0, total: 0, message: 'Not started', errors: [] };
       progress.analyses = { status: 'idle', current: 0, total: 0, message: 'Not started', errors: [] };
       progress.datasources = { status: 'idle', current: 0, total: 0, message: 'Not started', errors: [] };
     }
+    // If assetTypes is an empty array, progress remains empty
     
     this.currentSession = {
       sessionId,
@@ -567,14 +574,17 @@ export class AssetExportOrchestrator implements IProgressTracker {
 
     await this.saveSessionState();
     
-    // Rebuild the asset index after completing the export
+    // The index is now updated incrementally during export, so we don't need to rebuild
+    // Just emit an event to notify that export is complete
     try {
-      logger.info('Rebuilding asset index after export completion...');
-      await this.rebuildAssetIndex();
-      logger.info('Asset index rebuilt successfully');
+      logger.info('Export completed, index has been updated incrementally');
+      indexingService.emit('export:completed', {
+        sessionId: this.currentSession.sessionId,
+        summary: result,
+        timestamp: new Date().toISOString(),
+      });
     } catch (error) {
-      logger.error('Failed to rebuild asset index:', error);
-      // Don't throw - this is an optimization, not critical
+      logger.error('Failed to emit export completion event:', error);
     }
   }
 
@@ -780,151 +790,56 @@ export class AssetExportOrchestrator implements IProgressTracker {
   }
 
   async getAllAssets() {
-    // Try to use optimized index first
     try {
-      const index = await this.metadataService.getMetadata('assets/index/master-index.json');
-      if (index && index.assetsByType) {
-        logger.info('Using optimized asset index');
-        
-        // Flatten all assets from the index
-        const assets: any[] = [];
-        
-        if (index.assetsByType.dashboards) {
-          assets.push(...index.assetsByType.dashboards);
-        }
-        if (index.assetsByType.datasets) {
-          assets.push(...index.assetsByType.datasets);
-        }
-        if (index.assetsByType.analyses) {
-          assets.push(...index.assetsByType.analyses);
-        }
-        if (index.assetsByType.datasources) {
-          assets.push(...index.assetsByType.datasources);
-        }
-        
-        // Calculate total size from indexed assets
-        const totalSize = assets.reduce((sum, asset) => sum + (asset.fileSize || 0), 0);
-        
-        return {
-          assets,
-          summary: index.summary || {
-            total: assets.length,
-            types: {
-              dashboards: index.assetsByType.dashboards?.length || 0,
-              datasets: index.assetsByType.datasets?.length || 0,
-              analyses: index.assetsByType.analyses?.length || 0,
-              datasources: index.assetsByType.datasources?.length || 0,
-            },
-          },
-          totalSize,
-        };
+      // Use the new IndexingService
+      const index = await indexingService.getMasterIndex();
+      
+      // Flatten all assets from the index
+      const assets: any[] = [];
+      
+      if (index.assetsByType.dashboards) {
+        assets.push(...index.assetsByType.dashboards);
       }
-    } catch (error) {
-      logger.debug('No optimized index found, falling back to listing objects');
-    }
-    
-    // Fallback to listing objects if index is not available
-    const assets: any[] = [];
-    
-    try {
-      const [dashboards, datasets, analyses, datasources] = await Promise.all([
-        this.metadataService.listObjects('assets/dashboards/'),
-        this.metadataService.listObjects('assets/datasets/'),
-        this.metadataService.listObjects('assets/analyses/'),
-        this.metadataService.listObjects('assets/datasources/'),
-      ]);
-
-      // Convert S3 objects to asset summaries
-      for (const obj of dashboards) {
-        if (obj.key.endsWith('.json')) {
-          const id = obj.key.split('/').pop()?.replace('.json', '');
-          if (id) {
-            assets.push({ 
-              id, 
-              type: 'dashboard', 
-              name: id, // Use ID as name for fallback (index has proper names)
-              lastModified: obj.lastModified,
-              fileSize: obj.size 
-            });
-          }
-        }
+      if (index.assetsByType.datasets) {
+        assets.push(...index.assetsByType.datasets);
       }
-
-      for (const obj of datasets) {
-        if (obj.key.endsWith('.json')) {
-          const id = obj.key.split('/').pop()?.replace('.json', '');
-          if (id) {
-            assets.push({ 
-              id, 
-              type: 'dataset', 
-              name: id, // Use ID as name for fallback (index has proper names)
-              lastModified: obj.lastModified,
-              fileSize: obj.size 
-            });
-          }
-        }
+      if (index.assetsByType.analyses) {
+        assets.push(...index.assetsByType.analyses);
       }
-
-      for (const obj of analyses) {
-        if (obj.key.endsWith('.json')) {
-          const id = obj.key.split('/').pop()?.replace('.json', '');
-          if (id) {
-            assets.push({ 
-              id, 
-              type: 'analysis', 
-              name: id, // Use ID as name for fallback (index has proper names)
-              lastModified: obj.lastModified,
-              fileSize: obj.size 
-            });
-          }
-        }
+      if (index.assetsByType.datasources) {
+        assets.push(...index.assetsByType.datasources);
       }
-
-      for (const obj of datasources) {
-        if (obj.key.endsWith('.json')) {
-          const id = obj.key.split('/').pop()?.replace('.json', '');
-          if (id) {
-            assets.push({ 
-              id, 
-              type: 'datasource', 
-              name: id, // Use ID as name for fallback (index has proper names)
-              lastModified: obj.lastModified,
-              fileSize: obj.size 
-            });
-          }
-        }
-      }
+      
+      logger.info(`Retrieved ${assets.length} assets from index`);
+      
+      return {
+        assets,
+        summary: index.summary,
+        totalSize: index.summary.totalSize,
+      };
     } catch (error) {
       logger.error('Error getting all assets:', error);
-    }
-
-    // Calculate total size
-    const totalSize = assets.reduce((sum, asset) => sum + (asset.fileSize || 0), 0);
-    
-    return { 
-      assets,
-      summary: {
-        total: assets.length,
-        types: {
-          dashboards: assets.filter(a => a.type === 'dashboard').length,
-          datasets: assets.filter(a => a.type === 'dataset').length,
-          analyses: assets.filter(a => a.type === 'analysis').length,
-          datasources: assets.filter(a => a.type === 'datasource').length,
+      return {
+        assets: [],
+        summary: {
+          totalAssets: 0,
+          assetsByType: {
+            dashboards: 0,
+            datasets: 0,
+            analyses: 0,
+            datasources: 0,
+          },
+          totalSize: 0,
+          lastUpdated: new Date().toISOString(),
+          indexVersion: '2.0',
         },
-      },
-      totalSize,
-    };
+        totalSize: 0,
+      };
+    }
   }
 
   async getAsset(assetType: 'dashboards' | 'datasets' | 'analyses' | 'datasources', assetId: string) {
-    const servicePath = assetType.slice(0, -1); // Remove 's' from plural
-    const cacheKey = `assets/${servicePath}s/${assetId}.json`;
-    
-    try {
-      return await this.metadataService.getMetadata(cacheKey);
-    } catch {
-      return null;
-    }
+    return indexingService.getAsset(assetType, assetId);
   }
 
   async refreshAssetTags(assetType: 'dashboards' | 'datasets' | 'analyses' | 'datasources', assetId: string) {
@@ -977,8 +892,8 @@ export class AssetExportOrchestrator implements IProgressTracker {
       const sessions = await Promise.race([
         this.metadataService.listObjects('sessions/'),
         new Promise<any[]>((_, reject) => 
-          setTimeout(() => reject(new Error('Timeout listing sessions')), 5000)
-        )
+          setTimeout(() => reject(new Error('Timeout listing sessions')), 5000),
+        ),
       ]);
       
       // Sort by S3 last modified time first to get most recent
@@ -1003,7 +918,7 @@ export class AssetExportOrchestrator implements IProgressTracker {
               // Ignore individual session load errors
             }
             return null;
-          })
+          }),
         );
       
       const loadedSessions = await Promise.all(loadPromises);
@@ -1127,47 +1042,14 @@ export class AssetExportOrchestrator implements IProgressTracker {
   }
 
   async rebuildAssetIndex(): Promise<{ totalAssets: number; assetTypes: Record<string, number> }> {
-    logger.info('Rebuilding asset index...');
+    logger.info('Rebuilding asset index using IndexingService...');
     try {
-      const startTime = Date.now();
-      
-      // Load all asset metadata
-      const [dashboards, datasets, analyses, datasources] = await Promise.all([
-        this.loadAssetMetadata('dashboards'),
-        this.loadAssetMetadata('datasets'),
-        this.loadAssetMetadata('analyses'),
-        this.loadAssetMetadata('datasources'),
-      ]);
-      
-      // Build the index
-      const index = {
-        assetsByType: {
-          dashboards,
-          datasets,
-          analyses,
-          datasources,
-        },
-        summary: {
-          total: dashboards.length + datasets.length + analyses.length + datasources.length,
-          types: {
-            dashboards: dashboards.length,
-            datasets: datasets.length,
-            analyses: analyses.length,
-            datasources: datasources.length,
-          },
-        },
-        lastUpdated: new Date().toISOString(),
-      };
-      
-      // Save the index
-      await this.metadataService.saveMetadata('assets/index/master-index.json', index);
-      
-      const duration = Date.now() - startTime;
-      logger.info(`Asset index rebuilt successfully in ${duration}ms`);
+      // Use the new IndexingService to rebuild the index
+      const index = await indexingService.rebuildMasterIndex();
       
       return {
-        totalAssets: index.summary.total,
-        assetTypes: index.summary.types,
+        totalAssets: index.summary.totalAssets,
+        assetTypes: index.summary.assetsByType,
       };
     } catch (error) {
       logger.error('Failed to rebuild asset index:', error);
@@ -1175,68 +1057,4 @@ export class AssetExportOrchestrator implements IProgressTracker {
     }
   }
 
-  private async loadAssetMetadata(assetType: string): Promise<any[]> {
-    const assets: any[] = [];
-    
-    try {
-      const objects = await this.metadataService.listObjects(`assets/${assetType}/`);
-      
-      // Load metadata for each asset in parallel (with concurrency limit)
-      // Use lower concurrency for large asset counts to avoid memory issues
-      const assetCount = objects.filter(obj => obj.key.endsWith('.json')).length;
-      const concurrency = assetCount > 500 ? 3 : 5;
-      const limit = pLimit(concurrency);
-      
-      if (assetCount > 100) {
-        logger.info(`Loading metadata for ${assetCount} ${assetType} with concurrency ${concurrency}`);
-      }
-      const loadPromises = objects
-        .filter(obj => obj.key.endsWith('.json'))
-        .map(obj => limit(async () => {
-          try {
-            const data = await this.metadataService.getMetadata(obj.key);
-            if (data && data['@metadata']) {
-              const id = obj.key.split('/').pop()?.replace('.json', '') || '';
-              const baseAsset: any = {
-                id,
-                type: assetType === 'analyses' ? 'analysis' : assetType.slice(0, -1), // Handle 'analyses' -> 'analysis' correctly
-                name: data['@metadata'].name || 'Unnamed',
-                lastModified: obj.lastModified,
-                lastExported: data['@metadata'].exportTime || data['@metadata'].lastModifiedTime,
-                importMode: data['@metadata'].importMode,
-                datasourceType: data['@metadata'].datasourceType || data['@metadata'].type,
-                fieldCount: data['@metadata'].fieldCount,
-                calculatedFieldCount: data['@metadata'].calculatedFieldCount,
-                fileSize: obj.size, // Add file size from S3 object
-                tags: data.Tags || [],
-                permissions: data.Permissions?.map((p: any) => ({
-                  principal: p.Principal,
-                  actions: p.Actions,
-                })) || [],
-              };
-              
-              // Add datasource-specific fields
-              if (assetType === 'datasources' && data.DataSource) {
-                baseAsset.connectionStatus = data.DataSource.Status || 'Unknown';
-                baseAsset.datasourceType = data.DataSource.Type || data['@metadata'].type || 'Unknown';
-              }
-              
-              return baseAsset;
-            }
-            return null;
-          } catch (error) {
-            logger.warn(`Failed to load metadata for ${obj.key}:`, error);
-            return null;
-          }
-        }));
-      
-      const results = await Promise.all(loadPromises);
-      assets.push(...results.filter(Boolean));
-      
-    } catch (error) {
-      logger.error(`Error loading ${assetType} metadata:`, error);
-    }
-    
-    return assets;
-  }
 }

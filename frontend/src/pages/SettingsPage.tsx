@@ -28,8 +28,8 @@ import {
   Dns as DnsIcon,
 } from '@mui/icons-material';
 import { useSnackbar } from 'notistack';
+import { settingsApi } from '@/services/api';
 import { config } from '@/config';
-import axios from 'axios';
 
 interface AWSIdentity {
   accountId: string;
@@ -88,9 +88,9 @@ export default function SettingsPage() {
     try {
       setIdentityLoading(true);
       setIdentityError(null);
-      const response = await axios.get(`${config.API_URL}/settings/aws-identity`);
-      if (response.data.success) {
-        setAwsIdentity(response.data.data);
+      const response = await settingsApi.getAwsIdentity();
+      if (response.success) {
+        setAwsIdentity(response.data);
       }
     } catch (error: any) {
       setIdentityError(error.response?.status === 401 

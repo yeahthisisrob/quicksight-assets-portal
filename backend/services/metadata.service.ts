@@ -225,6 +225,30 @@ export class MetadataService {
     }
   }
 
+  async getObjectMetadata(key: string): Promise<{ size: number; lastModified: Date } | null> {
+    await this.initializeBucket();
+    
+    try {
+      const command = new HeadObjectCommand({
+        Bucket: this.bucketName,
+        Key: key,
+      });
+
+      const response = await this.s3Client.send(command);
+      return {
+        size: response.ContentLength || 0,
+        lastModified: response.LastModified || new Date(),
+      };
+    } catch (error: any) {
+      if (error.name === 'NotFound') {
+        return null;
+      }
+      
+      logger.error(`Error getting object metadata for ${key}:`, error);
+      throw error;
+    }
+  }
+
   async listObjects(prefix: string): Promise<Array<{ key: string; size: number; lastModified: Date }>> {
     await this.initializeBucket();
     const objects: Array<{ key: string; size: number; lastModified: Date }> = [];

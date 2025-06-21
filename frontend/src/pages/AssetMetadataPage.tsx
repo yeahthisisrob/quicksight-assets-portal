@@ -194,9 +194,11 @@ export default function AssetMetadataPage() {
         if (response.status === 'cancelled') {
           setIsExporting(false);
           setExportingAssetType(null);
+          setIsRebuildingIndex(false);
           clearInterval(pollInterval);
           setExportSessionId(null);
           setExportProgress(null);
+          setHasActiveSession(false);
           queryClient.invalidateQueries({ queryKey: ['active-sessions'] });
           return;
         }
@@ -228,6 +230,11 @@ export default function AssetMetadataPage() {
           setIsRebuildingIndex(false);
           clearInterval(pollInterval);
           
+          // Clear session state
+          setExportSessionId(null);
+          setExportProgress(null);
+          setHasActiveSession(false);
+          
           // Check if the export failed
           const failed = isRebuildSession
             ? response.progress?.rebuild?.status === 'error'
@@ -249,6 +256,7 @@ export default function AssetMetadataPage() {
             enqueueSnackbar(successMessage, { variant: 'success' });
             queryClient.invalidateQueries({ queryKey: ['export-summary'] });
             queryClient.invalidateQueries({ queryKey: ['assets-all'] });
+            queryClient.invalidateQueries({ queryKey: ['asset-index'] });
             queryClient.invalidateQueries({ queryKey: ['data-catalog'] });
             queryClient.invalidateQueries({ queryKey: ['active-sessions'] });
           } else {
@@ -321,15 +329,18 @@ export default function AssetMetadataPage() {
   const handleRebuildIndex = async () => {
     try {
       setIsRebuildingIndex(true);
+      setHasActiveSession(true);
       const response = await assetsApi.rebuildIndex();
       
       if (response.sessionId) {
         setExportSessionId(response.sessionId);
+        setIsExporting(true); // Set this so polling starts
         enqueueSnackbar('Index and catalog rebuild started...', { variant: 'info' });
       }
     } catch (error: any) {
       enqueueSnackbar(`Failed to rebuild index: ${error.message}`, { variant: 'error' });
       setIsRebuildingIndex(false);
+      setHasActiveSession(false);
     }
   };
 
@@ -338,8 +349,10 @@ export default function AssetMetadataPage() {
       await assetsApi.cancelExportSession();
       setIsExporting(false);
       setExportingAssetType(null);
+      setIsRebuildingIndex(false);
       setExportSessionId(null);
       setExportProgress(null);
+      setHasActiveSession(false);
       enqueueSnackbar('Export cancelled successfully', { variant: 'info' });
       
       // Force a small delay to ensure backend has saved the cancelled state
@@ -348,6 +361,7 @@ export default function AssetMetadataPage() {
       // Refresh the export summary and active sessions to get updated state
       await queryClient.invalidateQueries({ queryKey: ['export-summary'] });
       await queryClient.invalidateQueries({ queryKey: ['active-sessions'] });
+      await queryClient.invalidateQueries({ queryKey: ['asset-index'] });
       
       // Force refetch to ensure we get the latest state
       queryClient.refetchQueries({ queryKey: ['active-sessions'] });

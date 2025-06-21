@@ -2,6 +2,7 @@ import { AssetExportOrchestrator } from './export/AssetExportOrchestrator';
 import { AssetParserService } from './assetParser.service';
 import { MetadataService } from './metadata.service';
 import { FieldMetadataService } from './fieldMetadata.service';
+import { indexingService } from './indexing.service';
 import { logger } from '../utils/logger';
 
 export interface CatalogField {
@@ -83,123 +84,40 @@ export class DataCatalogService {
    * Get all exported assets from S3
    */
   async getAllAssets() {
-    const allAssets: Array<{
-      type: string;
-      name: string;
-      id: string;
-      fileSize: number;
-      lastExported: Date;
-      s3Key: string;
-      permissions?: any[];
-      tags?: any[];
-    }> = [];
-
     try {
-      // Try to use optimized index first
-      try {
-        const index = await this.metadataService.getMetadata('assets/index/master-index.json');
-        if (index && index.assetsByType) {
-          logger.info('Using optimized index for getAllAssets');
-          
-          // Convert index format to getAllAssets format
-          for (const [type, assets] of Object.entries(index.assetsByType)) {
-            for (const asset of assets as any[]) {
-              allAssets.push({
-                type: type.slice(0, -1), // Remove 's' from type
-                name: asset.name,
-                id: asset.id,
-                fileSize: asset.fileSize || 0,
-                lastExported: asset.lastExported ? new Date(asset.lastExported) : new Date(),
-                s3Key: asset.s3Key,
-                permissions: asset.permissions || [],
-                tags: asset.tags || [],
-                // Include asset-specific fields for frontend
-                ...asset, // Spread all asset properties
-              });
-            }
-          }
-          
-          return {
-            assets: allAssets,
-            summary: null,
-            totalSize: allAssets.reduce((sum, asset) => sum + asset.fileSize, 0),
-          };
-        }
-      } catch (indexError) {
-        logger.debug('No optimized index available, falling back to file listing');
-      }
-
-      // Fall back to original method
-      // List all objects in the assets directory
-      const objects = await this.metadataService.listObjects('assets/');
+      // Use the new IndexingService
+      const index = await indexingService.getMasterIndex();
+      const allAssets: any[] = [];
       
-      // Filter out non-JSON files, export summary, and index files
-      const assetFiles = objects.filter(obj => 
-        obj.key.endsWith('.json') && 
-        !obj.key.endsWith('export-summary.json') &&
-        !obj.key.includes('/index/'),
-      );
-
-      // Process each asset file
-      for (const obj of assetFiles) {
-        const parts = obj.key.split('/');
-        if (parts.length >= 3) {
-          const type = parts[1]; // dashboards, datasets, analyses, datasources
-          const filename = parts[parts.length - 1];
-          const id = filename.replace('.json', '');
-          
-          // Try to get the asset metadata including permissions and tags
-          let name = id;
-          let permissions: any[] = [];
-          let tags: any[] = [];
-          try {
-            const metadata = await this.metadataService.getMetadata(obj.key);
-            name = metadata['@metadata']?.name || 
-                   metadata.Dashboard?.Name || 
-                   metadata.DataSet?.Name || 
-                   metadata.Analysis?.Name || 
-                   metadata.DataSource?.Name ||
-                   id;
-            permissions = metadata.Permissions || [];
-            tags = metadata.Tags || [];
-          } catch {
-            // If we can't read the metadata, just use the ID
-            logger.debug(`Could not read metadata for ${obj.key}`);
-          }
-          
-          // Handle special case for analyses -> analysis
-          let assetType: string;
-          if (type === 'analyses') {
-            assetType = 'analysis';
-          } else {
-            assetType = type.slice(0, -1); // Remove 's' from end
-          }
-          
+      // Convert index format to flat list
+      for (const [type, assets] of Object.entries(index.assetsByType)) {
+        for (const asset of assets) {
           allAssets.push({
-            type: assetType,
-            name,
-            id,
-            fileSize: obj.size,
-            lastExported: obj.lastModified,
-            s3Key: obj.key,
-            permissions,
-            tags,
+            type: asset.type,
+            name: asset.name,
+            id: asset.id,
+            fileSize: asset.fileSize || 0,
+            lastExported: asset.lastExported ? new Date(asset.lastExported) : new Date(),
+            s3Key: `assets/${type}/${asset.id}.json`,
+            permissions: asset.permissions || [],
+            tags: asset.tags || [],
+            // Include metadata fields
+            ...(asset.metadata || {}),
           });
         }
       }
-
-      // Sort by last exported date, newest first
-      allAssets.sort((a, b) => b.lastExported.getTime() - a.lastExported.getTime());
+      
+      logger.info(`Retrieved ${allAssets.length} assets from index`);
       
       return {
         assets: allAssets,
-        summary: null,
-        totalSize: allAssets.reduce((sum, asset) => sum + asset.fileSize, 0),
+        summary: index.summary,
+        totalSize: index.summary.totalSize,
       };
     } catch (error) {
       logger.error('Error getting all assets:', error);
       return {
-        assets: allAssets,
+        assets: [],
         summary: null,
         totalSize: 0,
       };
@@ -244,8 +162,31 @@ export class DataCatalogService {
 
       logger.info('Building data catalog...');
       
-      // Get all exported assets directly from S3
-      const assetsData = await this.getAllAssets();
+      // Get all exported assets using IndexingService
+      const index = await indexingService.getMasterIndex();
+      const allAssets: any[] = [];
+      
+      // Convert index format to flat list
+      for (const [type, assets] of Object.entries(index.assetsByType)) {
+        for (const asset of assets) {
+          allAssets.push({
+            type: asset.type,
+            name: asset.name,
+            id: asset.id,
+            fileSize: asset.fileSize || 0,
+            lastExported: asset.lastExported,
+            permissions: asset.permissions || [],
+            tags: asset.tags || [],
+            metadata: asset.metadata || {},
+          });
+        }
+      }
+      
+      const assetsData = {
+        assets: allAssets,
+        summary: index.summary,
+        totalSize: index.summary.totalSize,
+      };
       logger.info('Found assets for catalog', { 
         totalAssets: assetsData?.assets?.length || 0,
         assetTypes: assetsData?.assets?.map(a => a.type) || [],
@@ -355,24 +296,27 @@ export class DataCatalogService {
           // Process regular fields from dataset
           for (const field of parsed.fields) {
             const fieldKey = `${field.fieldName}::${asset.id}`;
-            const catalogField = fieldMap.get(fieldKey) || {
-              fieldId: field.fieldId,
-              fieldName: field.fieldName,
-              dataType: field.dataType,
-              isCalculated: false,
-              sources: [],
-              lineage: {
-                datasetId: asset.id,
-                datasetName: asset.name,
-                datasourceType: datasetInfo?.datasourceType,
-                importMode: datasetInfo?.importMode,
-                analysisIds: [],
-                dashboardIds: [],
-              },
-            };
+            let catalogField = fieldMap.get(fieldKey);
+            if (!catalogField) {
+              catalogField = {
+                fieldId: field.fieldId,
+                fieldName: field.fieldName,
+                dataType: field.dataType,
+                isCalculated: false,
+                sources: [],
+                lineage: {
+                  datasetId: asset.id,
+                  datasetName: asset.name,
+                  datasourceType: datasetInfo?.datasourceType,
+                  importMode: datasetInfo?.importMode,
+                  analysisIds: [],
+                  dashboardIds: [],
+                },
+              } as CatalogField;
+            }
             
             catalogField.sources.push({
-              assetType: 'dataset',
+              assetType: 'dataset' as const,
               assetId: asset.id,
               assetName: asset.name,
               lastModified: asset.lastExported,
@@ -384,25 +328,28 @@ export class DataCatalogService {
           // Process calculated fields from dataset
           for (const calcField of parsed.calculatedFields) {
             const fieldKey = `${calcField.name}::${asset.id}::calculated`;
-            const catalogField = fieldMap.get(fieldKey) || {
-              fieldId: calcField.name,
-              fieldName: calcField.name,
-              dataType: 'Calculated',
-              isCalculated: true,
-              expression: calcField.expression,
-              sources: [],
-              lineage: {
-                datasetId: asset.id,
-                datasetName: asset.name,
-                datasourceType: datasetInfo?.datasourceType,
-                importMode: datasetInfo?.importMode,
-                analysisIds: [],
-                dashboardIds: [],
-              },
-            };
+            let catalogField = fieldMap.get(fieldKey);
+            if (!catalogField) {
+              catalogField = {
+                fieldId: calcField.name,
+                fieldName: calcField.name,
+                dataType: 'Calculated',
+                isCalculated: true,
+                expression: calcField.expression,
+                sources: [],
+                lineage: {
+                  datasetId: asset.id,
+                  datasetName: asset.name,
+                  datasourceType: datasetInfo?.datasourceType,
+                  importMode: datasetInfo?.importMode,
+                  analysisIds: [],
+                  dashboardIds: [],
+                },
+              } as CatalogField;
+            }
             
             catalogField.sources.push({
-              assetType: 'dataset',
+              assetType: 'dataset' as const,
               assetId: asset.id,
               assetName: asset.name,
               lastModified: asset.lastExported,
@@ -489,21 +436,24 @@ export class DataCatalogService {
             const fieldKey = isDatasetCalcField ? calcFieldKey : (datasetId ? `${field.fieldName}::${datasetId}` : `${field.fieldName}::unknown`);
             
             // If it's a dataset calculated field, get the existing entry
-            const catalogField = fieldMap.get(fieldKey) || {
-              fieldId: field.fieldId,
-              fieldName: field.fieldName,
-              dataType: field.dataType,
-              isCalculated: false,
-              sources: [],
-              lineage: {
-                datasetId,
-                datasetName,
-                datasourceType: datasetId ? datasetMap.get(datasetId)?.datasourceType : undefined,
-                importMode: datasetId ? datasetMap.get(datasetId)?.importMode : undefined,
-                analysisIds: [],
-                dashboardIds: [],
-              },
-            };
+            let catalogField = fieldMap.get(fieldKey);
+            if (!catalogField) {
+              catalogField = {
+                fieldId: field.fieldId,
+                fieldName: field.fieldName,
+                dataType: field.dataType,
+                isCalculated: false,
+                sources: [],
+                lineage: {
+                  datasetId,
+                  datasetName,
+                  datasourceType: datasetId ? datasetMap.get(datasetId)?.datasourceType : undefined,
+                  importMode: datasetId ? datasetMap.get(datasetId)?.importMode : undefined,
+                  analysisIds: [],
+                  dashboardIds: [],
+                },
+              } as CatalogField;
+            }
             
             catalogField.sources.push({
               assetType: 'analysis',
@@ -531,25 +481,28 @@ export class DataCatalogService {
             const datasetName = datasetInfo?.name;
             const fieldKey = `${calcField.name}::analysis::${asset.id}::calculated`;
             
-            const catalogField = fieldMap.get(fieldKey) || {
-              fieldId: calcField.name,
-              fieldName: calcField.name,
-              dataType: 'Calculated',
-              isCalculated: true,
-              expression: calcField.expression,
-              sources: [],
-              lineage: {
-                datasetId,
-                datasetName,
-                datasourceType: datasetId ? datasetMap.get(datasetId)?.datasourceType : undefined,
-                importMode: datasetId ? datasetMap.get(datasetId)?.importMode : undefined,
-                analysisIds: [asset.id],
-                dashboardIds: [],
-              },
-            };
+            let catalogField = fieldMap.get(fieldKey);
+            if (!catalogField) {
+              catalogField = {
+                fieldId: calcField.name,
+                fieldName: calcField.name,
+                dataType: 'Calculated',
+                isCalculated: true,
+                expression: calcField.expression,
+                sources: [],
+                lineage: {
+                  datasetId,
+                  datasetName,
+                  datasourceType: datasetId ? datasetMap.get(datasetId)?.datasourceType : undefined,
+                  importMode: datasetId ? datasetMap.get(datasetId)?.importMode : undefined,
+                  analysisIds: [asset.id],
+                  dashboardIds: [],
+                },
+              } as CatalogField;
+            }
             
             catalogField.sources.push({
-              assetType: 'analysis',
+              assetType: 'analysis' as const,
               assetId: asset.id,
               assetName: asset.name,
               datasetId,
@@ -653,21 +606,24 @@ export class DataCatalogService {
             const fieldKey = isDatasetCalcField ? calcFieldKey : (datasetId ? `${field.fieldName}::${datasetId}` : `${field.fieldName}::unknown`);
             
             // If it's a dataset calculated field, get the existing entry
-            const catalogField = fieldMap.get(fieldKey) || {
-              fieldId: field.fieldId,
-              fieldName: field.fieldName,
-              dataType: field.dataType,
-              isCalculated: false,
-              sources: [],
-              lineage: {
-                datasetId,
-                datasetName,
-                datasourceType: datasetId ? datasetMap.get(datasetId)?.datasourceType : undefined,
-                importMode: datasetId ? datasetMap.get(datasetId)?.importMode : undefined,
-                analysisIds: [],
-                dashboardIds: [],
-              },
-            };
+            let catalogField = fieldMap.get(fieldKey);
+            if (!catalogField) {
+              catalogField = {
+                fieldId: field.fieldId,
+                fieldName: field.fieldName,
+                dataType: field.dataType,
+                isCalculated: false,
+                sources: [],
+                lineage: {
+                  datasetId,
+                  datasetName,
+                  datasourceType: datasetId ? datasetMap.get(datasetId)?.datasourceType : undefined,
+                  importMode: datasetId ? datasetMap.get(datasetId)?.importMode : undefined,
+                  analysisIds: [],
+                  dashboardIds: [],
+                },
+              } as CatalogField;
+            }
             
             catalogField.sources.push({
               assetType: 'dashboard',
@@ -695,25 +651,28 @@ export class DataCatalogService {
             const datasetName = datasetInfo?.name;
             const fieldKey = `${calcField.name}::dashboard::${asset.id}::calculated`;
             
-            const catalogField = fieldMap.get(fieldKey) || {
-              fieldId: calcField.name,
-              fieldName: calcField.name,
-              dataType: 'Calculated',
-              isCalculated: true,
-              expression: calcField.expression,
-              sources: [],
-              lineage: {
-                datasetId,
-                datasetName,
-                datasourceType: datasetId ? datasetMap.get(datasetId)?.datasourceType : undefined,
-                importMode: datasetId ? datasetMap.get(datasetId)?.importMode : undefined,
-                analysisIds: [],
-                dashboardIds: [asset.id],
-              },
-            };
+            let catalogField = fieldMap.get(fieldKey);
+            if (!catalogField) {
+              catalogField = {
+                fieldId: calcField.name,
+                fieldName: calcField.name,
+                dataType: 'Calculated',
+                isCalculated: true,
+                expression: calcField.expression,
+                sources: [],
+                lineage: {
+                  datasetId,
+                  datasetName,
+                  datasourceType: datasetId ? datasetMap.get(datasetId)?.datasourceType : undefined,
+                  importMode: datasetId ? datasetMap.get(datasetId)?.importMode : undefined,
+                  analysisIds: [],
+                  dashboardIds: [asset.id],
+                },
+              } as CatalogField;
+            }
             
             catalogField.sources.push({
-              assetType: 'dashboard',
+              assetType: 'dashboard' as const,
               assetId: asset.id,
               assetName: asset.name,
               datasetId,
@@ -874,7 +833,7 @@ export class DataCatalogService {
             const metadata = await this.fieldMetadataService.getFieldMetadata(
               'dataset',
               datasetSource.assetId,
-              field.fieldName
+              field.fieldName,
             );
             
             if (metadata && metadata.tags && metadata.tags.length > 0) {
@@ -911,6 +870,15 @@ export class DataCatalogService {
       try {
         await this.metadataService.saveMetadata('catalog/data-catalog.json', catalog);
         logger.info('Data catalog cached to S3');
+        
+        // Also save field index in IndexingService for faster lookups
+        await indexingService.saveFieldIndex({
+          fieldMap: Object.fromEntries(fieldMap),
+          fields: fields,
+          calculatedFields: calculatedFields,
+          summary: summary,
+          lastUpdated: new Date().toISOString(),
+        });
       } catch (error) {
         logger.error('Failed to cache data catalog:', error);
       }

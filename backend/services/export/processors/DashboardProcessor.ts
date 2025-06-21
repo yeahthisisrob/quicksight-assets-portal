@@ -18,18 +18,9 @@ export class DashboardProcessor extends BaseAssetProcessor {
 
     const cacheKey = this.getCacheKey(dashboardId);
 
-    // Check if we need to update
-    const existingData = await this.metadataService.getMetadata(cacheKey).catch(() => null);
-    const existingMetadata = existingData?.['@metadata'];
-    
-    const needsUpdate = context.forceRefresh || 
-      !existingMetadata?.exportTime ||
-      this.isStale(existingMetadata.exportTime) ||
-      (summary.LastUpdatedTime && existingMetadata?.lastModifiedTime && 
-       new Date(summary.LastUpdatedTime) > new Date(existingMetadata.lastModifiedTime));
-
-    if (!needsUpdate) {
-      return; // Already cached and fresh
+    // Use base class cache checking
+    if (!await this.shouldUpdate(cacheKey, summary, context)) {
+      return;
     }
 
     // Fetch definition, details, permissions, and tags in parallel
@@ -72,10 +63,5 @@ export class DashboardProcessor extends BaseAssetProcessor {
 
   protected async getTags(assetId: string): Promise<any[]> {
     return this.tagService.getResourceTags('dashboard', assetId);
-  }
-
-  private isStale(exportTime: string): boolean {
-    const cacheAge = Date.now() - new Date(exportTime).getTime();
-    return cacheAge > 60 * 60 * 1000; // 1 hour
   }
 }

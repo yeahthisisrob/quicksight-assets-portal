@@ -3,6 +3,7 @@ import { AssetExportOrchestrator } from '../services/export/AssetExportOrchestra
 import { AssetParserService } from '../services/assetParser.service';
 import { DataCatalogService } from '../services/dataCatalog.service';
 import { TagService } from '../services/tag.service';
+import { indexingService } from '../services/indexing.service';
 import { asyncHandler } from '../utils/asyncHandler';
 import { logger } from '../utils/logger';
 
@@ -246,8 +247,8 @@ router.post('/rebuild-index', asyncHandler(async (req, res) => {
       assetExportService.updateProgress('rebuild', {
         status: 'running',
         current: 0,
-        total: 2,
-        message: 'Starting index rebuild...',
+        total: 3,
+        message: 'Reading exported assets from S3...',
       });
       
       // 1. Rebuild asset index
@@ -255,8 +256,8 @@ router.post('/rebuild-index', asyncHandler(async (req, res) => {
       assetExportService.updateProgress('rebuild', {
         status: 'running',
         current: 1,
-        total: 2,
-        message: 'Rebuilding asset index...',
+        total: 3,
+        message: 'Creating asset index...',
       });
       
       const indexResult = await assetExportService.rebuildAssetIndex();
@@ -270,8 +271,8 @@ router.post('/rebuild-index', asyncHandler(async (req, res) => {
       assetExportService.updateProgress('rebuild', {
         status: 'running',
         current: 2,
-        total: 2,
-        message: 'Rebuilding data catalog...',
+        total: 3,
+        message: 'Creating data catalog...',
       });
       
       const catalogResult = await dataCatalogService.buildDataCatalog();
@@ -293,8 +294,8 @@ router.post('/rebuild-index', asyncHandler(async (req, res) => {
       
       assetExportService.updateProgress('rebuild', {
         status: 'completed',
-        current: 2,
-        total: 2,
+        current: 3,
+        total: 3,
         message: 'Index and catalog rebuild completed',
         stats: {
           updated: 2,
@@ -384,50 +385,43 @@ router.get('/dashboards/paginated', asyncHandler(async (req, res) => {
   logger.info('Fetching paginated dashboards', { page, pageSize, search });
   
   try {
-    // Try to use optimized index first
-    let dashboards: any[] = [];
-    try {
-      const index = await assetExportService.getMetadataService().getMetadata('assets/index/master-index.json');
-      if (index && index.assetsByType?.dashboards) {
-        dashboards = index.assetsByType.dashboards;
-        logger.info(`Using optimized index with ${dashboards.length} dashboards`);
-      }
-    } catch (error) {
-      logger.info('No optimized index found, falling back to getAllAssets');
-      // Fall back to old method
-      const allAssets = await assetExportService.getAllAssets();
-      dashboards = allAssets.assets.filter(asset => asset.type === 'dashboard');
-    }
+    // Use the new IndexingService
+    const result = await indexingService.getAssetsByType('dashboards', {
+      search: search as string,
+      page: Number(page),
+      pageSize: Number(pageSize),
+    });
     
-    // Apply search filter
-    if (search) {
-      const searchLower = String(search).toLowerCase();
-      dashboards = dashboards.filter(dashboard => 
-        dashboard.name.toLowerCase().includes(searchLower) ||
-        dashboard.id.toLowerCase().includes(searchLower),
-      );
-    }
+    logger.info(`Retrieved ${result.assets.length} dashboards from index (total: ${result.pagination.totalItems})`);
     
-    // Calculate pagination
-    const totalItems = dashboards.length;
-    const totalPages = Math.ceil(totalItems / Number(pageSize));
-    const startIndex = (Number(page) - 1) * Number(pageSize);
-    const endIndex = startIndex + Number(pageSize);
-    
-    // Get paginated items - already have all needed data from export
-    const paginatedDashboards = dashboards.slice(startIndex, endIndex);
+    // Enrich assets with full data including permissions
+    const enrichedAssets = await Promise.all(
+      result.assets.map(async (indexEntry) => {
+        try {
+          const fullAsset = await indexingService.getAsset('dashboards', indexEntry.id);
+          if (fullAsset) {
+            // Transform to match frontend expectations
+            return {
+              ...indexEntry,
+              permissions: fullAsset.Permissions || [],
+              tags: fullAsset.Tags || [],
+              metadata: fullAsset['@metadata'] || {},
+              dashboard: fullAsset.Dashboard,
+            };
+          }
+        } catch (error) {
+          logger.warn(`Failed to enrich dashboard ${indexEntry.id}:`, error);
+        }
+        // Return index entry if enrichment fails
+        return indexEntry;
+      })
+    );
     
     res.json({
       success: true,
       data: {
-        dashboards: paginatedDashboards,
-        pagination: {
-          page: Number(page),
-          pageSize: Number(pageSize),
-          totalItems,
-          totalPages,
-          hasMore: endIndex < totalItems,
-        },
+        dashboards: enrichedAssets,
+        pagination: result.pagination,
       },
     });
   } catch (error: any) {
@@ -450,50 +444,43 @@ router.get('/analyses/paginated', asyncHandler(async (req, res) => {
   logger.info('Fetching paginated analyses', { page, pageSize, search });
   
   try {
-    // Try to use optimized index first
-    let analyses: any[] = [];
-    try {
-      const index = await assetExportService.getMetadataService().getMetadata('assets/index/master-index.json');
-      if (index && index.assetsByType?.analyses) {
-        analyses = index.assetsByType.analyses;
-        logger.info(`Using optimized index with ${analyses.length} analyses`);
-      }
-    } catch (error) {
-      logger.info('No optimized index found, falling back to getAllAssets');
-      // Fall back to old method
-      const allAssets = await assetExportService.getAllAssets();
-      analyses = allAssets.assets.filter(asset => asset.type === 'analysis');
-    }
+    // Use the new IndexingService
+    const result = await indexingService.getAssetsByType('analyses', {
+      search: search as string,
+      page: Number(page),
+      pageSize: Number(pageSize),
+    });
     
-    // Apply search filter
-    if (search) {
-      const searchLower = String(search).toLowerCase();
-      analyses = analyses.filter(analysis => 
-        analysis.name.toLowerCase().includes(searchLower) ||
-        analysis.id.toLowerCase().includes(searchLower),
-      );
-    }
+    logger.info(`Retrieved ${result.assets.length} analyses from index (total: ${result.pagination.totalItems})`);
     
-    // Calculate pagination
-    const totalItems = analyses.length;
-    const totalPages = Math.ceil(totalItems / Number(pageSize));
-    const startIndex = (Number(page) - 1) * Number(pageSize);
-    const endIndex = startIndex + Number(pageSize);
-    
-    // Get paginated items - already have all needed data from export
-    const paginatedAnalyses = analyses.slice(startIndex, endIndex);
+    // Enrich assets with full data including permissions
+    const enrichedAssets = await Promise.all(
+      result.assets.map(async (indexEntry) => {
+        try {
+          const fullAsset = await indexingService.getAsset('analyses', indexEntry.id);
+          if (fullAsset) {
+            // Transform to match frontend expectations
+            return {
+              ...indexEntry,
+              permissions: fullAsset.Permissions || [],
+              tags: fullAsset.Tags || [],
+              metadata: fullAsset['@metadata'] || {},
+              analysis: fullAsset.Analysis,
+            };
+          }
+        } catch (error) {
+          logger.warn(`Failed to enrich analysis ${indexEntry.id}:`, error);
+        }
+        // Return index entry if enrichment fails
+        return indexEntry;
+      })
+    );
     
     res.json({
       success: true,
       data: {
-        analyses: paginatedAnalyses,
-        pagination: {
-          page: Number(page),
-          pageSize: Number(pageSize),
-          totalItems,
-          totalPages,
-          hasMore: endIndex < totalItems,
-        },
+        analyses: enrichedAssets,
+        pagination: result.pagination,
       },
     });
   } catch (error: any) {
@@ -516,50 +503,20 @@ router.get('/datasources/paginated', asyncHandler(async (req, res) => {
   logger.info('Fetching paginated datasources', { page, pageSize, search });
   
   try {
-    // Try to use optimized index first
-    let datasources: any[] = [];
-    try {
-      const index = await assetExportService.getMetadataService().getMetadata('assets/index/master-index.json');
-      if (index && index.assetsByType?.datasources) {
-        datasources = index.assetsByType.datasources;
-        logger.info(`Using optimized index with ${datasources.length} datasources`);
-      }
-    } catch (error) {
-      logger.info('No optimized index found, falling back to getAllAssets');
-      // Fall back to old method
-      const allAssets = await assetExportService.getAllAssets();
-      datasources = allAssets.assets.filter(asset => asset.type === 'datasource');
-    }
+    // Use the new IndexingService
+    const result = await indexingService.getAssetsByType('datasources', {
+      search: search as string,
+      page: Number(page),
+      pageSize: Number(pageSize),
+    });
     
-    // Apply search filter
-    if (search) {
-      const searchLower = String(search).toLowerCase();
-      datasources = datasources.filter(datasource => 
-        datasource.name.toLowerCase().includes(searchLower) ||
-        datasource.id.toLowerCase().includes(searchLower),
-      );
-    }
-    
-    // Calculate pagination
-    const totalItems = datasources.length;
-    const totalPages = Math.ceil(totalItems / Number(pageSize));
-    const startIndex = (Number(page) - 1) * Number(pageSize);
-    const endIndex = startIndex + Number(pageSize);
-    
-    // Get paginated items - already have all needed data from export
-    const paginatedDatasources = datasources.slice(startIndex, endIndex);
+    logger.info(`Retrieved ${result.assets.length} datasources from index (total: ${result.pagination.totalItems})`);
     
     res.json({
       success: true,
       data: {
-        datasources: paginatedDatasources,
-        pagination: {
-          page: Number(page),
-          pageSize: Number(pageSize),
-          totalItems,
-          totalPages,
-          hasMore: endIndex < totalItems,
-        },
+        datasources: result.assets,
+        pagination: result.pagination,
       },
     });
   } catch (error: any) {
@@ -656,63 +613,56 @@ router.get('/datasets/paginated', asyncHandler(async (req, res) => {
   logger.info('Fetching paginated datasets', { page, pageSize, search });
   
   try {
-    // Try to use optimized index first
-    let datasets: any[] = [];
-    try {
-      const index = await assetExportService.getMetadataService().getMetadata('assets/index/master-index.json');
-      if (index && index.assetsByType?.datasets) {
-        datasets = index.assetsByType.datasets;
-        logger.info(`Using optimized index with ${datasets.length} datasets`);
-      }
-    } catch (error) {
-      logger.info('No optimized index found, falling back to getAllAssets');
-      // Fall back to old method
-      const allAssets = await assetExportService.getAllAssets();
-      datasets = allAssets.assets.filter(asset => asset.type === 'dataset');
-    }
+    // Use the new IndexingService
+    const result = await indexingService.getAssetsByType('datasets', {
+      search: search as string,
+      page: Number(page),
+      pageSize: Number(pageSize),
+    });
     
-    // Apply search filter
-    if (search) {
-      const searchLower = String(search).toLowerCase();
-      datasets = datasets.filter(dataset => 
-        dataset.name.toLowerCase().includes(searchLower) ||
-        dataset.id.toLowerCase().includes(searchLower),
-      );
-    }
+    logger.info(`Retrieved ${result.assets.length} datasets from index (total: ${result.pagination.totalItems})`);
     
-    // Calculate pagination
-    const totalItems = datasets.length;
-    const totalPages = Math.ceil(totalItems / Number(pageSize));
-    const startIndex = (Number(page) - 1) * Number(pageSize);
-    const endIndex = startIndex + Number(pageSize);
-    
-    // Get paginated items
-    const paginatedDatasets = datasets.slice(startIndex, endIndex);
-    
-    // Return datasets as-is from cache - they should already have all needed data
-    // This avoids making individual parse requests for each dataset
-    const enrichedDatasets = paginatedDatasets.map(dataset => ({
-      ...dataset,
-      // Ensure these fields exist with defaults
-      datasourceType: dataset.datasourceType || 'Unknown',
-      importMode: dataset.importMode || undefined,
-      tags: dataset.tags || [],
-      fields: dataset.fieldCount || 0,
-      calculatedFields: dataset.calculatedFieldCount || 0,
-      permissions: dataset.permissions || [],
-    }));
+    // Enrich datasets with full data
+    const enrichedDatasets = await Promise.all(
+      result.assets.map(async (indexEntry) => {
+        try {
+          const fullAsset = await indexingService.getAsset('datasets', indexEntry.id);
+          if (fullAsset) {
+            // Transform to match frontend expectations
+            return {
+              ...indexEntry,
+              permissions: fullAsset.Permissions || [],
+              tags: fullAsset.Tags || [],
+              metadata: fullAsset['@metadata'] || {},
+              dataset: fullAsset.DataSet,
+              // Additional dataset-specific fields
+              datasourceType: fullAsset['@metadata']?.datasourceType || indexEntry.metadata?.datasourceType || 'Unknown',
+              importMode: fullAsset.DataSet?.ImportMode || indexEntry.metadata?.importMode || undefined,
+              fields: fullAsset['@metadata']?.fieldCount || indexEntry.metadata?.fieldCount || 0,
+              calculatedFields: fullAsset['@metadata']?.calculatedFieldCount || indexEntry.metadata?.calculatedFieldCount || 0,
+            };
+          }
+        } catch (error) {
+          logger.warn(`Failed to enrich dataset ${indexEntry.id}:`, error);
+        }
+        // Return index entry with defaults if enrichment fails
+        return {
+          ...indexEntry,
+          datasourceType: indexEntry.metadata?.datasourceType || 'Unknown',
+          importMode: indexEntry.metadata?.importMode || undefined,
+          tags: indexEntry.tags || [],
+          fields: indexEntry.metadata?.fieldCount || 0,
+          calculatedFields: indexEntry.metadata?.calculatedFieldCount || 0,
+          permissions: indexEntry.permissions || [],
+        };
+      })
+    );
     
     res.json({
       success: true,
       data: {
         datasets: enrichedDatasets,
-        pagination: {
-          page: Number(page),
-          pageSize: Number(pageSize),
-          totalItems,
-          totalPages,
-          hasMore: endIndex < totalItems,
-        },
+        pagination: result.pagination,
       },
     });
   } catch (error: any) {
@@ -722,6 +672,99 @@ router.get('/datasets/paginated', asyncHandler(async (req, res) => {
       error: error.message || 'Failed to fetch datasets',
     });
   }
+}));
+
+// GET /api/assets/index/stats - Get index statistics
+router.get('/index/stats', asyncHandler(async (req, res) => {
+  try {
+    const stats = await indexingService.getIndexStats();
+    res.json({
+      success: true,
+      data: stats,
+    });
+  } catch (error: any) {
+    logger.error('Error getting index stats:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to get index statistics',
+    });
+  }
+}));
+
+// GET /api/assets/diagnostics - Check asset storage health
+router.get('/diagnostics', asyncHandler(async (req, res) => {
+  logger.info('Running asset diagnostics');
+  
+  const diagnostics: any = {
+    exportSummary: { exists: false, data: null },
+    indexHealth: { healthy: false, issues: [], stats: null },
+    assetIndex: { exists: false, data: null },
+    assetFiles: {
+      dashboards: { count: 0, sampleIds: [] },
+      datasets: { count: 0, sampleIds: [] },
+      analyses: { count: 0, sampleIds: [] },
+      datasources: { count: 0, sampleIds: [] },
+    },
+  };
+  
+  try {
+    // Check export summary
+    const summary = await assetExportService.getExportSummary();
+    if (summary) {
+      diagnostics.exportSummary.exists = true;
+      diagnostics.exportSummary.data = {
+        lastUpdated: summary.lastUpdated,
+        totalAssets: summary.totalAssets,
+        lastExport: summary.lastExport ? {
+          dashboards: summary.lastExport.dashboards?.total || 0,
+          datasets: summary.lastExport.datasets?.total || 0,
+          analyses: summary.lastExport.analyses?.total || 0,
+          datasources: summary.lastExport.datasources?.total || 0,
+        } : null,
+      };
+    }
+  } catch (error) {
+    logger.error('Error checking export summary:', error);
+  }
+  
+  try {
+    // Check index health using IndexingService
+    const health = await indexingService.checkIndexHealth();
+    diagnostics.indexHealth = health;
+    
+    // Get index stats
+    const stats = await indexingService.getIndexStats();
+    diagnostics.assetIndex.exists = true;
+    diagnostics.assetIndex.data = {
+      lastUpdated: stats.lastUpdated,
+      totalAssets: stats.totalAssets,
+      assetCounts: stats.assetsByType,
+      indexVersion: stats.indexVersion,
+    };
+  } catch (error) {
+    logger.error('Error checking index health:', error);
+    diagnostics.indexHealth.issues.push(`Failed to check index: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
+  
+  try {
+    // Check actual asset files
+    const assetTypes = ['dashboards', 'datasets', 'analyses', 'datasources'];
+    for (const type of assetTypes) {
+      const objects = await assetExportService.getMetadataService().listObjects(`assets/${type}/`);
+      const jsonFiles = objects.filter(obj => obj.key.endsWith('.json'));
+      diagnostics.assetFiles[type].count = jsonFiles.length;
+      diagnostics.assetFiles[type].sampleIds = jsonFiles
+        .slice(0, 3)
+        .map(obj => obj.key.split('/').pop()?.replace('.json', '') || '');
+    }
+  } catch (error) {
+    logger.error('Error checking asset files:', error);
+  }
+  
+  res.json({
+    success: true,
+    data: diagnostics,
+  });
 }));
 
 // GET /api/assets/all
@@ -766,7 +809,7 @@ router.get('/all', asyncHandler(async (req, res) => {
       assets: paginatedAssets,
       summary: allAssets.summary,
       totalSize: allAssets.totalSize,
-      assetCounts: allAssets.summary?.types || {
+      assetCounts: allAssets.summary?.assetsByType || {
         dashboards: 0,
         datasets: 0,
         analyses: 0,

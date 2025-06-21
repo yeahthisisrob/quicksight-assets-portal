@@ -12,7 +12,10 @@
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
     "lint": "eslint . --ext .ts,.tsx",
-    "lint:fix": "eslint . --ext .ts,.tsx --fix"
+    "lint:fix": "eslint . --ext .ts,.tsx --fix",
+    "test:indexing": "ts-node scripts/test-indexing.ts",
+    "test:indexing:rebuild": "ts-node scripts/test-indexing.ts --rebuild",
+    "test:indexing:incremental": "ts-node scripts/test-incremental-indexing.ts"
   },
   "dependencies": {
     "@aws-lambda-powertools/logger": "^2.21.0",

@@ -21,8 +21,9 @@ import {
   LocalOffer as TagIcon,
 } from '@mui/icons-material';
 import { useDebounce } from '@/hooks/useDebounce';
-import { assetsApi } from '@/services/api';
+import { assetsApi, lineageApi } from '@/services/api';
 import { useSnackbar } from 'notistack';
+import { useQuery } from '@tanstack/react-query';
 import BulkActionsToolbar from '@/components/common/BulkActionsToolbar';
 import AddToFolderDialog from '@/components/common/AddToFolderDialog';
 import BulkTagDialog from '@/components/common/BulkTagDialog';
@@ -77,13 +78,12 @@ export default function AssetListPage({
   const debouncedSearchTerm = useDebounce(searchTerm, 500);
   
   // Fetch lineage data for related assets
-  // TODO: Re-enable when auth issues are resolved
-  const lineageData = null; // Temporarily disabled
-  /* const { data: lineageData } = useQuery({
+  const { data: lineageData } = useQuery({
     queryKey: ['lineage-all'],
     queryFn: () => lineageApi.getAllLineage(),
     staleTime: 5 * 60 * 1000, // Cache for 5 minutes
-  }); */
+    retry: 1,
+  });
   
   // Fetch assets when pagination or search changes
   useEffect(() => {
@@ -113,9 +113,24 @@ export default function AssetListPage({
   };
   
   // Helper function to get related assets for a specific asset
-  const getRelatedAssetsForAsset = (_assetId: string): any[] => {
-    // Lineage functionality is temporarily disabled
-    return [];
+  const getRelatedAssetsForAsset = (assetId: string): any[] => {
+    if (!lineageData || !lineageData.lineage) return [];
+    
+    const relatedAssets: any[] = [];
+    const assetLineage = lineageData.lineage.find((l: any) => l.assetId === assetId);
+    
+    if (assetLineage && assetLineage.relationships) {
+      assetLineage.relationships.forEach((rel: any) => {
+        relatedAssets.push({
+          id: rel.targetAssetId,
+          name: rel.targetAssetName,
+          type: rel.targetAssetType,
+          relationshipType: rel.relationshipType,
+        });
+      });
+    }
+    
+    return relatedAssets;
   };
   
   const handleRefreshTags = async () => {

@@ -14,9 +14,23 @@ router.get('/all', asyncHandler(async (req, res) => {
   
   const lineage = await lineageService.getAllLineage();
   
+  // Log summary for debugging
+  logger.info('Lineage summary:', {
+    totalAssets: lineage.length,
+    assetsWithRelationships: lineage.filter(l => l.relationships.length > 0).length,
+    totalRelationships: lineage.reduce((sum, l) => sum + l.relationships.length, 0),
+  });
+  
   res.json({
     success: true,
-    data: lineage,
+    data: {
+      lineage: lineage,
+      summary: {
+        totalAssets: lineage.length,
+        assetsWithRelationships: lineage.filter(l => l.relationships.length > 0).length,
+        totalRelationships: lineage.reduce((sum, l) => sum + l.relationships.length, 0),
+      }
+    },
   });
 }));
 
@@ -42,7 +56,7 @@ router.get('/:assetId', asyncHandler(async (req, res) => {
 }));
 
 // GET /api/lineage/debug - Debug endpoint to check asset structures
-router.get('/debug', asyncHandler(async (req, res) => {
+router.get('/debug/assets', asyncHandler(async (req, res) => {
   logger.info('Debug: Getting sample asset structures');
   
   try {
@@ -88,6 +102,44 @@ router.get('/debug', asyncHandler(async (req, res) => {
     res.json({
       success: true,
       data: debugInfo,
+    });
+  } catch (error) {
+    logger.error('Debug endpoint error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Debug failed',
+      details: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+}));
+
+// GET /api/lineage/debug - Simple debug endpoint
+router.get('/debug', asyncHandler(async (req, res) => {
+  logger.info('Debug: Building lineage to check relationships');
+  
+  try {
+    const lineage = await lineageService.getAllLineage();
+    
+    // Find assets with relationships
+    const assetsWithRelationships = lineage.filter(l => l.relationships.length > 0);
+    const sampleRelationships = assetsWithRelationships.slice(0, 5).map(l => ({
+      assetId: l.assetId,
+      assetName: l.assetName,
+      assetType: l.assetType,
+      relationshipCount: l.relationships.length,
+      relationships: l.relationships.slice(0, 3), // First 3 relationships
+    }));
+    
+    res.json({
+      success: true,
+      data: {
+        summary: {
+          totalAssets: lineage.length,
+          assetsWithRelationships: assetsWithRelationships.length,
+          totalRelationships: lineage.reduce((sum, l) => sum + l.relationships.length, 0),
+        },
+        sampleRelationships,
+      },
     });
   } catch (error) {
     logger.error('Debug endpoint error:', error);

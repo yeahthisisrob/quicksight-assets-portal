@@ -80,7 +80,7 @@ export class V2DataSourceLister {
         const params: AWS.QuickSight.ListDataSourcesRequest = {
           AwsAccountId: this.awsAccountId,
           MaxResults: 100,
-          ...(nextToken && { NextToken: nextToken })
+          ...(nextToken && { NextToken: nextToken }),
         };
 
         const response = await this.quicksight.listDataSources(params).promise();

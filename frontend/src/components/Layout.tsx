@@ -33,8 +33,7 @@ import {
   Folder as FolderIcon,
   Search as SearchIcon,
 } from '@mui/icons-material';
-import axios from 'axios';
-import { config } from '@/config';
+import { settingsApi } from '@/services/api';
 
 const drawerWidth = 240;
 
@@ -68,14 +67,17 @@ export default function Layout() {
 
   useEffect(() => {
     // Fetch AWS identity on component mount
-    axios.get(`${config.API_URL}/settings/aws-identity`)
+    settingsApi.getAwsIdentity()
       .then(response => {
-        if (response.data.success) {
-          setAwsIdentity(response.data.data);
+        if (response.success) {
+          setAwsIdentity(response.data);
         }
       })
       .catch(error => {
-        console.error('Failed to fetch AWS identity:', error);
+        // Silently handle 401 errors - user might not be authenticated yet
+        if (error.response?.status !== 401) {
+          console.error('Failed to fetch AWS identity:', error);
+        }
       });
   }, []);
 

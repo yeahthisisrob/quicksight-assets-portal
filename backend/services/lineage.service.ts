@@ -113,6 +113,10 @@ export class LineageService {
       hasVersion: !!dashboardData.Dashboard?.Version,
       hasSourceEntityArn: !!dashboardData.Dashboard?.Version?.SourceEntityArn,
       hasDefinition: !!dashboardData.Definition,
+      hasDataSetIdentifierDeclarations: !!dashboardData.Definition?.DataSetIdentifierDeclarations,
+      hasDataSetIdentifierMap: !!dashboardData.Definition?.DataSetIdentifierMap,
+      dataSetCount: dashboardData.Definition?.DataSetIdentifierDeclarations?.length || 
+                    Object.keys(dashboardData.Definition?.DataSetIdentifierMap || {}).length || 0,
     });
 
     // Extract source analysis from dashboard version
@@ -230,9 +234,12 @@ export class LineageService {
       datasetIds = definition.DataSetIdentifierDeclarations.map((decl: any) => 
         decl.DataSetArn?.split('/').pop(),
       ).filter(Boolean);
+      logger.debug(`Found ${datasetIds.length} datasets in DataSetIdentifierDeclarations for ${asset.type} ${asset.id}`);
     } else if (definition?.DataSetIdentifierMap) {
       datasetIds = Object.keys(definition.DataSetIdentifierMap);
+      logger.debug(`Found ${datasetIds.length} datasets in DataSetIdentifierMap for ${asset.type} ${asset.id}`);
     } else {
+      logger.debug(`No dataset usage found for ${asset.type} ${asset.id}`);
       return; // No dataset usage found
     }
     

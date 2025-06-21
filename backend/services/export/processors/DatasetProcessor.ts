@@ -20,91 +20,62 @@ export class DatasetProcessor extends BaseAssetProcessor {
 
     const cacheKey = this.getCacheKey(datasetId);
 
-    // Check if we need to update
-    const existingData = await this.metadataService.getMetadata(cacheKey).catch(() => null);
-    const existingMetadata = existingData?.['@metadata'];
-    
-    const needsUpdate = context.forceRefresh || 
-      !existingMetadata?.exportTime ||
-      this.isStale(existingMetadata.exportTime) ||
-      (summary.LastUpdatedTime && existingMetadata?.lastModifiedTime && 
-       new Date(summary.LastUpdatedTime) > new Date(existingMetadata.lastModifiedTime));
-
-    if (!needsUpdate) {
-      return; // Already cached and fresh
+    // Use base class cache checking
+    if (!await this.shouldUpdate(cacheKey, summary, context)) {
+      return;
     }
 
-    logger.info(`Processing dataset ${datasetId} (${summary.Name}) - ImportMode: ${summary.ImportMode}, ARN: ${summary.Arn ? 'present' : 'missing'}`);
+    logger.debug(`Processing dataset ${datasetId} (${summary.Name})`);
 
-    // Handle uploaded file datasets that may fail DescribeDataSet
-    let detailResponse: any;
-    let isUploadedFile = false;
-    
-    try {
-      detailResponse = await this.executeWithRetry(
+    // Start all API calls in parallel for maximum performance
+    const apiPromises = {
+      details: this.executeWithRetry(
         () => this.client.send(new DescribeDataSetCommand({
           AwsAccountId: this.awsAccountId,
           DataSetId: datasetId,
         })),
         `DescribeDataSet(${datasetId})`,
-      );
-    } catch (describeError: any) {
-      logger.warn(`DescribeDataSet failed for ${datasetId} (${summary.Name}): ${describeError.message}`);
-      logger.info(`Treating dataset ${datasetId} as uploaded file, using fallback metadata`);
-      isUploadedFile = true;
-      
-      // Create minimal response for uploaded file datasets
-      detailResponse = {
-        DataSet: {
-          DataSetId: datasetId,
-          Arn: summary.Arn,
-          Name: summary.Name,
-          ImportMode: 'SPICE', // Uploaded files are typically SPICE
-          CreatedTime: summary.CreatedTime,
-          LastUpdatedTime: summary.LastUpdatedTime,
-        },
-      };
-    }
+      ).catch(err => {
+        logger.warn(`DescribeDataSet failed for ${datasetId}: ${err.message}`);
+        // Return fallback for uploaded file datasets
+        return {
+          DataSet: {
+            DataSetId: datasetId,
+            Arn: summary.Arn,
+            Name: summary.Name,
+            ImportMode: 'SPICE',
+            CreatedTime: summary.CreatedTime,
+            LastUpdatedTime: summary.LastUpdatedTime,
+          },
+          _isUploadedFile: true,
+        };
+      }),
+      permissions: this.getPermissions(datasetId).catch(err => {
+        logger.debug(`Failed to get permissions for dataset ${datasetId}: ${err.message}`);
+        return [];
+      }),
+      tags: this.getTags(datasetId).catch(err => {
+        logger.debug(`Failed to get tags for dataset ${datasetId}: ${err.message}`);
+        return [];
+      }),
+    };
+
+    // Execute all base API calls in parallel
+    const { details: detailResponse, permissions, tags } = await this.executeAllPromises(apiPromises);
+    const isUploadedFile = (detailResponse as any)._isUploadedFile || false;
 
     // Parse the dataset
-    let parsedDataset: any;
-    if (isUploadedFile) {
-      parsedDataset = {
-        fields: [],
-        calculatedFields: [],
-        datasourceInfo: { type: 'UPLOADED_FILE' },
-      };
-    } else {
-      parsedDataset = this.assetParserService.parseDataset(detailResponse);
-    }
+    const parsedDataset = isUploadedFile ? 
+      { fields: [], calculatedFields: [], datasourceInfo: { type: 'UPLOADED_FILE' } } :
+      this.assetParserService.parseDataset(detailResponse);
 
     // Determine datasource type
-    let datasourceType = 'Unknown';
-    if (isUploadedFile || parsedDataset.datasourceInfo?.type === 'UPLOADED_FILE') {
-      datasourceType = 'Uploaded File';
-    } else {
-      datasourceType = this.determineDatasourceType(detailResponse, parsedDataset);
-    }
+    const datasourceType = (isUploadedFile || parsedDataset.datasourceInfo?.type === 'UPLOADED_FILE') ?
+      'Uploaded File' : this.determineDatasourceType(detailResponse, parsedDataset);
 
-    // Fetch permissions and tags in parallel
-    const [permissions, tags] = await Promise.all([
-      this.getPermissions(datasetId).catch(err => {
-        if (isUploadedFile) {
-          logger.debug(`Permissions not available for uploaded file dataset ${datasetId}`);
-        } else {
-          logger.warn(`Failed to get permissions for dataset ${datasetId}: ${err.message}`);
-        }
-        return [];
-      }),
-      this.getTags(datasetId).catch(err => {
-        if (isUploadedFile) {
-          logger.debug(`Tags not available for uploaded file dataset ${datasetId}`);
-        } else {
-          logger.warn(`Failed to get tags for dataset ${datasetId}: ${err.message}`);
-        }
-        return [];
-      }),
-    ]);
+    // Fetch SPICE metadata if needed (parallel)
+    const spiceMetadata = detailResponse.DataSet?.ImportMode === 'SPICE' ? 
+      await this.fetchSpiceMetadata(datasetId) : null;
 
     const exportData: any = {
       DataSet: detailResponse.DataSet,
@@ -123,9 +94,10 @@ export class DatasetProcessor extends BaseAssetProcessor {
       },
     };
 
-    // For SPICE datasets, get refresh properties and schedules
-    if (detailResponse.DataSet?.ImportMode === 'SPICE') {
-      await this.addSpiceMetadata(datasetId, exportData);
+    // Add SPICE metadata if available
+    if (spiceMetadata) {
+      exportData.DataSetRefreshProperties = spiceMetadata.refreshProperties;
+      exportData.RefreshSchedules = spiceMetadata.schedules;
     }
 
     await this.metadataService.saveMetadata(cacheKey, exportData);
@@ -137,34 +109,42 @@ export class DatasetProcessor extends BaseAssetProcessor {
     }
   }
 
-  private async addSpiceMetadata(datasetId: string, exportData: any): Promise<void> {
-    try {
-      const refreshPropsResponse = await this.executeWithRetry(
+  private async fetchSpiceMetadata(datasetId: string): Promise<{ refreshProperties?: any; schedules?: any[] }> {
+    // Fetch both SPICE metadata in parallel
+    const [refreshProps, schedules] = await Promise.allSettled([
+      this.executeWithRetry(
         () => this.client.send(new DescribeDataSetRefreshPropertiesCommand({
           AwsAccountId: this.awsAccountId,
           DataSetId: datasetId,
         })),
         `DescribeDataSetRefreshProperties(${datasetId})`,
-      );
-      exportData.DataSetRefreshProperties = refreshPropsResponse.DataSetRefreshProperties;
-    } catch (error: any) {
-      if (!error.message?.includes('Dataset refresh properties are not set')) {
-        logger.warn(`Could not get refresh properties for dataset ${datasetId}:`, error.message);
-      }
-    }
-    
-    try {
-      const schedulesResponse = await this.executeWithRetry(
+      ),
+      this.executeWithRetry(
         () => this.client.send(new ListRefreshSchedulesCommand({
           AwsAccountId: this.awsAccountId,
           DataSetId: datasetId,
         })),
         `ListRefreshSchedules(${datasetId})`,
-      );
-      exportData.RefreshSchedules = schedulesResponse.RefreshSchedules || [];
-    } catch (error) {
-      logger.warn(`Could not get refresh schedules for dataset ${datasetId}:`, error);
+      ),
+    ]);
+    
+    const result: { refreshProperties?: any; schedules?: any[] } = {};
+    
+    // Handle refresh properties result
+    if (refreshProps.status === 'fulfilled') {
+      result.refreshProperties = refreshProps.value.DataSetRefreshProperties;
+    } else if (!refreshProps.reason?.message?.includes('Dataset refresh properties are not set')) {
+      logger.warn(`Could not get refresh properties for dataset ${datasetId}:`, refreshProps.reason?.message);
     }
+    
+    // Handle schedules result
+    if (schedules.status === 'fulfilled') {
+      result.schedules = schedules.value.RefreshSchedules || [];
+    } else {
+      logger.warn(`Could not get refresh schedules for dataset ${datasetId}:`, schedules.reason);
+    }
+    
+    return result;
   }
 
   private determineDatasourceType(detailResponse: any, parsedDataset: any): string {
@@ -211,10 +191,5 @@ export class DatasetProcessor extends BaseAssetProcessor {
 
   protected async getTags(assetId: string): Promise<any[]> {
     return this.tagService.getResourceTags('dataset', assetId);
-  }
-
-  private isStale(exportTime: string): boolean {
-    const cacheAge = Date.now() - new Date(exportTime).getTime();
-    return cacheAge > 60 * 60 * 1000; // 1 hour
   }
 }

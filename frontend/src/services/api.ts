@@ -650,6 +650,7 @@ export const settingsApi = {
   get: (key: string) => apiClient.get<any>(`/settings/${key}`).then(res => res.data),
   update: (key: string, value: any) => apiClient.put(`/settings/${key}`, { value }).then(res => res.data),
   delete: (key: string) => apiClient.delete(`/settings/${key}`).then(res => res.data),
+  getAwsIdentity: () => apiClient.get<ApiResponse<any>>('/settings/aws-identity').then(res => res.data),
 };
 
 // Semantic Layer API

@@ -69,7 +69,7 @@ export class V3CredentialBridge {
    */
   async createV2Client<T extends AWS.Service>(
     ServiceClass: new (config: ServiceConfigurationOptions) => T,
-    config: ServiceConfigurationOptions = {}
+    config: ServiceConfigurationOptions = {},
   ): Promise<T> {
     const credentials = await this.getV2Credentials();
     return new ServiceClass({
